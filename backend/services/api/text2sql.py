@@ -1,0 +1,331 @@
+import io
+import os
+import sqlite3
+import tempfile
+from datetime import datetime
+
+import pandas as pd
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+
+try:
+    from ..text2sql.db.databricks_service import DatabricksService
+    from ..text2sql.db.upload_service import UploadService
+    from ..text2sql.generation.llm_registry import list_llm_models
+    from ..text2sql.generation.sql_correction import clean_sql_query
+    from ..text2sql.generation.sql_generation import detect_large_dataset_request, generate_sql
+    from ..text2sql.models import QueryRequest
+    from ..text2sql.retrieval.history_question_retrieval import get_relevant_query_history
+    from ..text2sql.retrieval.table_matching import extract_table_name_from_question, get_all_available_tables, get_relevant_tables, invalidate_table_cache
+except ImportError:
+    from db.databricks_service import DatabricksService
+    from db.upload_service import UploadService
+    from generation.llm_registry import list_llm_models
+    from generation.sql_correction import clean_sql_query
+    from generation.sql_generation import detect_large_dataset_request, generate_sql
+    from models import QueryRequest
+    from retrieval.history_question_retrieval import get_relevant_query_history
+    from retrieval.table_matching import extract_table_name_from_question, get_all_available_tables, get_relevant_tables, invalidate_table_cache
+
+
+load_dotenv()
+
+app = FastAPI(title="SQL Query API", description="API for natural language to SQL queries", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+last_query_results: list[dict] = []
+data_service = DatabricksService()
+data_service.init_local_db()
+upload_service = UploadService(data_service)
+
+
+def save_query_to_history_background(query_text: str):
+    data_service.save_query_to_history(query_text)
+
+
+def get_table_columns(table_name: str) -> list[str] | None:
+    if table_name.startswith("uploaded_"):
+        return upload_service.get_uploaded_table_columns(table_name, data_service.local_db_path)
+
+    schema = data_service.get_table_schema(table_name)
+    return [col["name"] for col in schema] if schema else None
+
+
+def prepare_question(question: str, uploaded_table: str | None) -> tuple[str, str, list[dict], list[dict]]:
+    table_candidates = [] if uploaded_table else get_relevant_tables(question, data_service, limit=3)
+    related_queries = get_relevant_query_history(question, data_service, limit=3)
+    table_name = uploaded_table or (table_candidates[0]["full_name"] if table_candidates else extract_table_name_from_question(question, data_service))
+
+    if uploaded_table:
+        prepared_question = (
+            f"Using the uploaded table '{uploaded_table}', {question}. "
+            "Use simple SQL syntax suitable for SQLite, not T-SQL. Do not use fully qualified table names."
+        )
+    else:
+        prepared_question = question
+
+    return prepared_question, table_name, table_candidates, related_queries
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "SQL Query API",
+        "version": "1.0.0",
+        "status": "running",
+        "endpoints": {
+            "GET /health": "Health check",
+            "GET /llm-models": "Available LLM models",
+            "POST /generate_sql": "Generate SQL from natural language",
+            "POST /query": "Generate and execute natural language query",
+            "POST /upload": "Upload CSV/Excel file",
+            "GET /tables": "List tables",
+        },
+    }
+
+
+@app.get("/llm-models")
+async def get_llm_models():
+    return list_llm_models()
+
+
+@app.get("/health")
+async def health_check():
+    result = data_service.test_connection()
+    if result["status"] != "success":
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
+
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    if not any(file.filename.lower().endswith(ext) for ext in [".csv", ".xlsx", ".xls"]):
+        raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as temp_file:
+        try:
+            temp_file.write(await file.read())
+            temp_file.flush()
+            result = upload_service.process_uploaded_file(temp_file.name, file.filename)
+            if not result["success"]:
+                raise HTTPException(status_code=400, detail=f"File processing failed: {result['error']}")
+
+            invalidate_table_cache()
+            preview_data = data_service.query_uploaded_table(f"SELECT * FROM {result['table_name']} LIMIT 10")
+            return {
+                "message": "File uploaded successfully",
+                "table_name": result["table_name"],
+                "row_count": result["row_count"],
+                "column_count": result["column_count"],
+                "columns": result["columns"],
+                "preview_data": preview_data,
+                "preview_count": len(preview_data),
+                "original_filename": result.get("original_filename"),
+                "file_extension": result.get("file_extension"),
+            }
+        finally:
+            try:
+                os.unlink(temp_file.name)
+            except OSError:
+                pass
+
+
+@app.get("/recent_queries")
+async def get_recent_queries():
+    return {"recent_queries": data_service.get_recent_queries(5)}
+
+
+@app.get("/table/{table_name}/preview")
+async def get_table_preview(table_name: str, limit: int = 5):
+    try:
+        if table_name.startswith("uploaded_"):
+            conn = sqlite3.connect(data_service.local_db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
+                if not cursor.fetchone():
+                    raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                columns = [col["name"] for col in cursor.fetchall()]
+                cursor.execute(f"SELECT * FROM {table_name} LIMIT ?", (limit,))
+                rows = [dict(row) for row in cursor.fetchall()]
+                cursor.execute(f"SELECT COUNT(*) as count FROM {table_name}")
+                total_rows = cursor.fetchone()["count"]
+            finally:
+                conn.close()
+
+            return {
+                "table_name": table_name,
+                "columns": columns,
+                "rows": rows,
+                "preview_count": len(rows),
+                "total_rows": total_rows,
+                **data_service.get_table_metadata(table_name),
+            }
+
+        return data_service.get_table_preview(table_name, limit)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching table preview: {e}")
+
+
+@app.post("/generate_sql")
+async def generate_sql_endpoint(request: QueryRequest):
+    try:
+        is_large_request, custom_limit, _ = detect_large_dataset_request(request.question)
+        question, table_name, table_candidates, related_queries = prepare_question(request.question, request.uploaded_table)
+
+        raw_sql = generate_sql(question, table_name, get_table_columns(table_name), custom_limit, request.llm_model)
+        sql_query = clean_sql_query(raw_sql)
+
+        response = {
+            "question": request.question,
+            "sql_query": sql_query,
+            "table_name": table_name,
+            "table_candidates": table_candidates,
+            "related_queries": related_queries,
+        }
+        if is_large_request:
+            response["warning"] = "Large result set requested; execution may take longer than usual."
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"SQL Generation Error: {e}")
+
+
+@app.post("/query")
+async def execute_natural_language_query(request: QueryRequest, background_tasks: BackgroundTasks):
+    global last_query_results
+
+    try:
+        is_large_request, custom_limit, suggested_timeout = detect_large_dataset_request(request.question)
+        question, table_name, table_candidates, related_queries = prepare_question(request.question, request.uploaded_table)
+
+        raw_sql = generate_sql(question, table_name, get_table_columns(table_name), custom_limit, request.llm_model)
+        sql_query = clean_sql_query(raw_sql)
+
+        if table_name.startswith("uploaded_"):
+            result_rows = data_service.query_uploaded_table(sql_query)
+        else:
+            result_rows = data_service.execute_query(sql_query, timeout_seconds=min(suggested_timeout, 300), custom_limit=custom_limit)
+
+        last_query_results = result_rows
+        background_tasks.add_task(save_query_to_history_background, request.question)
+
+        response = {
+            "question": request.question,
+            "sql_query": sql_query,
+            "rows": result_rows,
+            "count": len(result_rows),
+            "raw_result": f"Retrieved {len(result_rows)} rows",
+            "table_candidates": table_candidates,
+            "related_queries": related_queries,
+        }
+        if is_large_request:
+            response["warning"] = "Large result set requested; execution may take longer than usual."
+        return response
+    except TimeoutError as e:
+        raise HTTPException(status_code=408, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Query Error: {e}")
+
+
+@app.get("/download/csv")
+async def download_csv():
+    if not last_query_results:
+        raise HTTPException(status_code=404, detail="No query results available for download")
+
+    csv_buffer = io.StringIO()
+    pd.DataFrame(last_query_results).to_csv(csv_buffer, index=False)
+    filename = f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    return Response(content=csv_buffer.getvalue(), media_type="text/csv", headers={"Content-Disposition": f"attachment; filename={filename}"})
+
+
+@app.get("/download/excel")
+async def download_excel():
+    if not last_query_results:
+        raise HTTPException(status_code=404, detail="No query results available for download")
+
+    excel_buffer = io.BytesIO()
+    df = pd.DataFrame(last_query_results)
+    try:
+        with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
+            df.to_excel(writer, sheet_name="Query Results", index=False)
+    except Exception:
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, sheet_name="Query Results", index=False)
+
+    filename = f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=excel_buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.get("/tables")
+async def get_tables(include_sql_server: bool = False):
+    try:
+        if include_sql_server:
+            tables = get_all_available_tables(data_service)
+            return {
+                "tables": tables,
+                "total_count": len(tables),
+                "uploaded_count": len([t for t in tables if t["source"] == "uploaded"]),
+                "sql_server_count": len([t for t in tables if t["source"] != "uploaded"]),
+                "sql_server_included": True,
+            }
+
+        uploaded_tables = data_service.get_uploaded_tables()
+        return {
+            "tables": uploaded_tables,
+            "total_count": len(uploaded_tables),
+            "uploaded_count": len(uploaded_tables),
+            "sql_server_count": 0,
+            "sql_server_included": False,
+        }
+    except Exception as e:
+        return {"tables": [], "error": str(e)}
+
+
+@app.get("/tables/uploaded")
+async def get_uploaded_tables_only():
+    try:
+        uploaded_tables = data_service.get_uploaded_tables()
+        return {"tables": uploaded_tables, "count": len(uploaded_tables), "source": "local_sqlite_only"}
+    except Exception as e:
+        return {"tables": [], "error": str(e)}
+
+
+@app.delete("/tables/uploaded/{table_name}")
+async def delete_uploaded_table(table_name: str):
+    if not table_name.startswith("uploaded_"):
+        raise HTTPException(status_code=400, detail="Only uploaded tables can be deleted")
+
+    result = data_service.delete_uploaded_table(table_name)
+    if not result["success"]:
+        raise HTTPException(status_code=404, detail=result["error"])
+
+    invalidate_table_cache()
+    return {"success": True, "message": result["message"], "table_name": table_name}
+
+
+@app.options("/{path:path}")
+async def options_handler(request: Request, path: str):
+    return Response(status_code=204)
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
