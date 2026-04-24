@@ -40,9 +40,21 @@ def sql_node(state: AgentState, *, data_service) -> dict:
     attempts = state.get("sql_attempts", 0)
     previous_sql = state.get("sql_query")
     previous_error = state.get("sql_error")
+    denied_tables: list[str] = state.get("denied_tables") or []
 
     # Step 1: pick table (reuse cached value if we're correcting)
     table_name = state.get("sql_table") or pick_table(question, data_service, uploaded_table)
+
+    # Access control — block if the table matches a denied pattern
+    if denied_tables and any(p.lower() in table_name.lower() for p in denied_tables):
+        return {
+            "sql_table": table_name,
+            "sql_query": None,
+            "sql_rows": None,
+            "sql_error": f"Access denied: your role does not have permission to query '{table_name}'.",
+            "sql_attempts": attempts + 1,
+        }
+
     columns = get_columns(table_name, data_service)
 
     # Step 2: generate (or fix) SQL

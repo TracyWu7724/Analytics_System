@@ -21,7 +21,6 @@ def rag_node(
     faiss_path: str,
     embed_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     reranker_model_name: Optional[str] = None,
-    llm_origin: str = "Gemini",
     initial_k: int = 10,
     final_k: int = 5,
 ) -> dict:
@@ -34,22 +33,24 @@ def rag_node(
     llm_model = state.get("llm_model", "gemini-2.5-flash")
     history = state.get("history") or []
 
+    denied_rag_sources: list[str] = state.get("denied_rag_sources") or []
+
     result = run_rag(
         question,
         metadata_path=metadata_path,
         faiss_path=faiss_path,
         embed_model_name=embed_model_name,
-        llm_origin=llm_origin,
         llm_model=llm_model,
         reranker_model_name=reranker_model_name,
         initial_k=initial_k,
         final_k=final_k,
         history=history,
+        denied_sources=denied_rag_sources or [],
     )
 
     return {
         "rag_answer": result["answer"] or None,
-        "rag_chunks": result["chunks"],
+        "rag_chunks": result.get("chunks") or [],
         "rag_error": result["error"],
     }
 

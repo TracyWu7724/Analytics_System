@@ -1,0 +1,48 @@
+{
+  "name": "eval_rag_perf",
+  "timestamp": "20260424_024337",
+  "rows": [
+    {
+      "variant": "vanilla",
+      "use_expansion": false,
+      "use_reranker": false,
+      "answer_relevance": 0.0,
+      "avg_latency_ms": 0.0
+    },
+    {
+      "variant": "pre_retrieval",
+      "use_expansion": true,
+      "use_reranker": false,
+      "answer_relevance": 0.0,
+      "avg_latency_ms": 0.0
+    },
+    {
+      "variant": "post_retrieval",
+      "use_expansion": false,
+      "use_reranker": true,
+      "answer_relevance": 0.0,
+      "avg_latency_ms": 0.0
+    },
+    {
+      "variant": "full_pipeline",
+      "use_expansion": true,
+      "use_reranker": true,
+      "answer_relevance": 0.0,
+      "avg_latency_ms": 0.0
+    }
+  ],
+  "summary": {
+    "answer_relevance": {
+      "vanilla": 0.0,
+      "pre_retrieval": 0.0,
+      "post_retrieval": 0.0,
+      "full_pipeline": 0.0
+    },
+    "avg_latency_ms": {
+      "vanilla": 0.0,
+      "pre_retrieval": 0.0,
+      "post_retrieval": 0.0,
+      "full_pipeline": 0.0
+    }
+  }
+}

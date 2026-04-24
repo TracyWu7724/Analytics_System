@@ -103,7 +103,6 @@ def build_agent(
     faiss_path: str = "",
     embed_model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
     reranker_model_name: Optional[str] = None,
-    llm_origin: str = "Gemini",
     initial_k: int = 10,
     final_k: int = 5,
 ):
@@ -121,7 +120,6 @@ def build_agent(
         faiss_path=faiss_path,
         embed_model_name=embed_model_name,
         reranker_model_name=reranker_model_name,
-        llm_origin=llm_origin,
         initial_k=initial_k,
         final_k=final_k,
     )

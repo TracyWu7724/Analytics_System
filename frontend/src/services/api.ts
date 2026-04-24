@@ -99,6 +99,25 @@ export class ApiService {
     }
   }
   
+  static async uploadPdf(file: File): Promise<{ success: boolean; filename?: string; chunks_added?: number; total_vectors?: number; error?: string }> {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const response = await fetchWithTimeout(getApiUrl('/upload/pdf'), {
+        method: 'POST',
+        body: formData,
+      }, 120000); // 2 min — PDF parsing can be slow
+      if (!response.ok) {
+        const errorText = await response.text();
+        return { success: false, error: `Upload failed: ${response.status} - ${errorText}` };
+      }
+      const result = await response.json();
+      return { success: true, filename: result.filename, chunks_added: result.chunks_added, total_vectors: result.total_vectors };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
   static async executeNaturalLanguageQuery(question: string, uploadedTable?: string, llmModel?: string): Promise<{ results?: QueryResult[], error?: string, warning?: string, sql_query?: string, trace_url?: string }> {
     console.log(`🔍 [API] Starting natural language query: "${question}", uploaded table: "${uploadedTable}"`);
     const startTime = Date.now();
@@ -244,9 +263,13 @@ export class ApiService {
       if (uploadedTable) body.uploaded_table = uploadedTable;
       if (llmModel) body.llm_model = llmModel;
 
+      const token = localStorage.getItem('ds_auth_token');
       const response = await fetchWithTimeout(getApiUrl('/agent/query'), {
         method: 'POST',
-        headers: API_CONFIG.HEADERS,
+        headers: {
+          ...API_CONFIG.HEADERS,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify(body),
       }, API_CONFIG.TIMEOUT);
 
@@ -353,6 +376,26 @@ export class ApiService {
     } catch (error) {
       console.error('[API] Failed to fetch LLM models:', error);
       return { models: [], default: 'gemini-2.5-flash' };
+    }
+  }
+
+  static async getDiagnostics(): Promise<any> {
+    try {
+      const response = await fetchWithTimeout(getApiUrl('/diagnostics'), {}, 15000);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Failed to run diagnostics' };
+    }
+  }
+
+  static async getEvalResults(): Promise<any> {
+    try {
+      const response = await fetchWithTimeout(getApiUrl('/eval/results'), {}, API_CONFIG.QUICK_TIMEOUT);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Failed to load eval results' };
     }
   }
 

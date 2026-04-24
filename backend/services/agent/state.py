@@ -18,6 +18,10 @@ class AgentState(TypedDict):
     uploaded_table: Optional[str]  # if user has an uploaded CSV in context
     llm_model: str               # which LLM to use for generation
 
+    # ── Auth / data-access ───────────────────────────────────────────────────
+    denied_tables: Optional[list[str]]       # table name substrings the user cannot query
+    denied_rag_sources: Optional[list[str]]  # RAG source substrings the user cannot see
+
     # ── Routing ──────────────────────────────────────────────────────────────
     route: Optional[str]         # "sql" | "rag" | "both"
     route_reasoning: Optional[str]  # why the router chose this route

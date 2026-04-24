@@ -1,14 +1,17 @@
 import React, { useState, useRef } from 'react';
-import { Upload, FileSpreadsheet, FileText, X } from "lucide-react";
+import { Upload, FileSpreadsheet, FileText, X, LogIn } from "lucide-react";
 import TablePreview from './TablePreview';
 import { ApiService } from '../services/api';
+import { useAuth } from '../hooks/useAuth';
 
 interface SearchBarProps {
-  onSearch: (query: string, uploadedTable?: string) => void;
+  onSearch: (query: string, uploadedTable?: string, llmModel?: string) => void;
   isLoading: boolean;
+  selectedModel?: string;
 }
 
-const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
+const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading, selectedModel }) => {
+  const { user } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadedTableName, setUploadedTableName] = useState<string | null>(null);
@@ -18,8 +21,8 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (searchQuery.trim()) {
-      onSearch(searchQuery.trim(), uploadedTableName || undefined);
+    if (searchQuery.trim() && user) {
+      onSearch(searchQuery.trim(), uploadedTableName || undefined, selectedModel);
     }
   };
 
@@ -56,19 +59,12 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
 
     setIsUploading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', file);
+      const result = await ApiService.uploadFile(file);
 
-      const response = await fetch('http://10.16.56.77:8000/upload', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (response.ok) {
-        const result = await response.json();
+      if (result.success && result.table_name) {
         setUploadedFile(file);
         setUploadedTableName(result.table_name);
-        
+
         // Fetch table preview after successful upload
         try {
           const preview = await ApiService.getTablePreview(result.table_name);
@@ -77,8 +73,7 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
           console.error('Failed to fetch table preview:', previewError);
         }
       } else {
-        const error = await response.text();
-        alert(`Upload failed: ${error}`);
+        alert(`Upload failed: ${result.error || 'Unknown error'}`);
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -173,12 +168,13 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
               
               {/* Search Input - LONG & NARROW */}
               <textarea
-                className="flex-1 bg-transparent border-0 focus:ring-0 focus:outline-none text-lg placeholder:text-gray-400 resize-none min-h-[50px] py-3 leading-relaxed w-full"
-                placeholder="Enter your text or upload a file for data query..."
+                className="flex-1 bg-transparent border-0 focus:ring-0 focus:outline-none text-lg placeholder:text-gray-400 resize-none min-h-[50px] py-3 leading-relaxed w-full disabled:cursor-not-allowed"
+                placeholder={user ? "Enter your text or upload a file for data query..." : "Please sign in to ask a question..."}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
                 rows={1}
+                disabled={!user}
                 style={{ fontFamily: 'inherit', minWidth: '0' }}
               />
 
@@ -206,29 +202,34 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
                 </button>
               </div>
               
-              {/* Execute Button - COMPACT */}
-              <button 
-                type="submit"
-                disabled={isLoading || !searchQuery.trim()}
-                className="inline-flex items-center gap-2 px-6 py-3 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium text-base shadow-xl hover:shadow-2xl flex-shrink-0"
-                style={{ 
-                  backgroundColor: '#113D73',
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#0e3560'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#113D73'}
-              >
-                {isLoading ? (
-                  <svg className="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                ) : (
-                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                )}
-                Execute
-              </button>
+              {/* Execute / Sign-in Button */}
+              {user ? (
+                <button
+                  type="submit"
+                  disabled={isLoading || !searchQuery.trim()}
+                  className="inline-flex items-center gap-2 px-6 py-3 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium text-base shadow-xl hover:shadow-2xl flex-shrink-0"
+                  style={{ backgroundColor: '#113D73' }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#0e3560'}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#113D73'}
+                >
+                  {isLoading ? (
+                    <svg className="w-6 h-6 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                  ) : (
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                  )}
+                  Execute
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 px-4 py-3 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg flex-shrink-0">
+                  <LogIn className="w-4 h-4" />
+                  Sign in to query
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -246,6 +247,7 @@ const SearchBar: React.FC<SearchBarProps> = ({ onSearch, isLoading }) => {
           />
         </div>
       )}
+
     </div>
   );
 };

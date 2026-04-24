@@ -47,6 +47,7 @@ def run_rag(
     history: Optional[list[dict]] = None,
     temperature: float = 0.2,
     max_tokens: int = 2048,
+    denied_sources: Optional[list[str]] = None,
 ) -> dict:
     """
     Run the full RAG pipeline and return answer + retrieved chunks.
@@ -76,11 +77,27 @@ def run_rag(
             product_uuid=product_uuid,
         )
 
+        # Filter out denied sources BEFORE building the LLM context.
+        # Match against product_id and source_file in metadata (r.source is the
+        # retrieval method "vector"/"bm25", not the document identifier).
+        if denied_sources:
+            def _chunk_identifier(r: RetrievalResult) -> str:
+                return (
+                    r.metadata.get("product_id", "")
+                    + "|"
+                    + r.metadata.get("source_file", "")
+                )
+
+            results = [
+                r for r in results
+                if not any(pattern in _chunk_identifier(r) for pattern in denied_sources)
+            ]
+
         chunks = [
             {
                 "text": r.text,
                 "score": r.score,
-                "source": r.source,
+                "source": r.metadata.get("source_file") or r.metadata.get("product_id") or r.source,
                 "metadata": r.metadata,
             }
             for r in results

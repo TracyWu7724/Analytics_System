@@ -6,13 +6,13 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 LLM_MODELS: Dict[str, Dict[str, str]] = {
-    "gemini-2.5-flash": {"provider": "google",     "display_name": "Gemini 2.5 Flash", "requires": "GEMINI_API_KEY"},
-    "gpt-4o":           {"provider": "openai",     "display_name": "GPT-4o",           "requires": "OPENAI_API_KEY"},
-    "gpt-4o-mini":      {"provider": "openai",     "display_name": "GPT-4o Mini",      "requires": "OPENAI_API_KEY"},
-    "gpt-5.4":          {"provider": "openai",     "display_name": "GPT-5.4",          "requires": "OPENAI_API_KEY"},
-    "gemma4":           {"provider": "ollama",     "display_name": "Gemma 4",          "requires": "", "ollama_model": "gemma4"},
-    "qwen3-0.6b":       {"provider": "ollama",     "display_name": "Qwen3 0.6B",       "requires": "", "ollama_model": "qwen3:0.6b"},
-    "qwen3-27b":        {"provider": "ollama",     "display_name": "Qwen3 27B",        "requires": "", "ollama_model": "qwen3:27b"},
+    "gemini-2.5-flash": {"provider": "google",  "display_name": "Gemini 2.5 Flash", "requires": "GEMINI_API_KEY"},
+    "gpt-4o":           {"provider": "openai",  "display_name": "GPT-4o",           "requires": "OPENAI_API_KEY"},
+    "gpt-4o-mini":      {"provider": "openai",  "display_name": "GPT-4o Mini",      "requires": "OPENAI_API_KEY"},
+    "gpt-5.4":          {"provider": "openai",  "display_name": "GPT-5.4",          "requires": "OPENAI_API_KEY"},
+    "gemma4":           {"provider": "ollama",  "display_name": "Gemma 4",          "requires": "", "ollama_model": "gemma4"},
+    "qwen3-0.6b":       {"provider": "ollama",  "display_name": "Qwen3 0.6B",       "requires": "", "ollama_model": "qwen3:0.6b"},
+    "qwen3-27b":        {"provider": "ollama",  "display_name": "Qwen3 27B",        "requires": "", "ollama_model": "qwen3.6:27b"},
 }
 
 DEFAULT_LLM_MODEL = "gemini-2.5-flash"

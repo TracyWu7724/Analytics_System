@@ -1,215 +1,370 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ApiService } from '../services/api';
-import { getApiUrl } from '../config/api';
+import { RefreshCw, AlertCircle, Clock, BarChart2, CheckCircle, XCircle, Database, Cpu, BookOpen } from 'lucide-react';
 
 interface DebugPanelProps {
   onClose: () => void;
 }
 
-interface TestResult {
-  name: string;
-  status: 'pending' | 'success' | 'error';
-  message?: string;
-  duration?: number;
+// ── Shared helpers ─────────────────────────────────────────────────────────
+
+function ScoreBar({ value, max = 1 }: { value: number; max?: number }) {
+  const pct = Math.min(100, Math.round((value / max) * 100));
+  const color = pct >= 70 ? 'bg-green-500' : pct >= 40 ? 'bg-yellow-400' : 'bg-red-400';
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs font-mono w-10 text-right text-gray-700">{value.toFixed(3)}</span>
+    </div>
+  );
 }
 
-export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
-  const [tests, setTests] = useState<TestResult[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
-
-  const updateTest = (name: string, update: Partial<TestResult>) => {
-    setTests(prev => 
-      prev.map(test => 
-        test.name === name ? { ...test, ...update } : test
-      )
-    );
-  };
-
-  const runDiagnostics = async () => {
-    setIsRunning(true);
-    const testList: TestResult[] = [
-      { name: 'Basic Connectivity', status: 'pending' },
-      { name: 'Health Check', status: 'pending' },
-      { name: 'Simple Query', status: 'pending' },
-      { name: 'SQL Generation', status: 'pending' },
-    ];
-    setTests(testList);
-
-    // Test 1: Basic connectivity
-    try {
-      const start = Date.now();
-      const response = await fetch(getApiUrl('/'), { 
-        method: 'GET',
-        signal: AbortSignal.timeout(5000)
-      });
-      const duration = Date.now() - start;
-      
-      if (response.ok) {
-        updateTest('Basic Connectivity', { 
-          status: 'success', 
-          message: `Connected successfully (${duration}ms)`, 
-          duration 
-        });
-      } else {
-        updateTest('Basic Connectivity', { 
-          status: 'error', 
-          message: `HTTP ${response.status}: ${response.statusText}` 
-        });
-      }
-    } catch (error) {
-      updateTest('Basic Connectivity', { 
-        status: 'error', 
-        message: error instanceof Error ? error.message : 'Connection failed' 
-      });
-    }
-
-    // Test 2: Health check
-    try {
-      const start = Date.now();
-      const health = await ApiService.healthCheck();
-      const duration = Date.now() - start;
-      
-      updateTest('Health Check', { 
-        status: 'success', 
-        message: `Database: ${health.database}, Tables: ${health.tables_count} (${duration}ms)`,
-        duration 
-      });
-    } catch (error) {
-      updateTest('Health Check', { 
-        status: 'error', 
-        message: error instanceof Error ? error.message : 'Health check failed' 
-      });
-    }
-
-    // Test 3: Simple query
-    try {
-      const start = Date.now();
-      const result = await ApiService.executeNaturalLanguageQuery('show tables');
-      const duration = Date.now() - start;
-      
-      if (result.error) {
-        updateTest('Simple Query', { 
-          status: 'error', 
-          message: result.error 
-        });
-      } else {
-        updateTest('Simple Query', { 
-          status: 'success', 
-          message: `Query executed successfully (${duration}ms)`,
-          duration 
-        });
-      }
-    } catch (error) {
-      updateTest('Simple Query', { 
-        status: 'error', 
-        message: error instanceof Error ? error.message : 'Query failed' 
-      });
-    }
-
-    // Test 4: SQL generation only
-    try {
-      const start = Date.now();
-      const result = await ApiService.generateSQL('show me all tables');
-      const duration = Date.now() - start;
-      
-      if (result.error) {
-        updateTest('SQL Generation', { 
-          status: 'error', 
-          message: result.error 
-        });
-      } else {
-        updateTest('SQL Generation', { 
-          status: 'success', 
-          message: `SQL generated: ${result.sql_query?.substring(0, 50)}... (${duration}ms)`,
-          duration 
-        });
-      }
-    } catch (error) {
-      updateTest('SQL Generation', { 
-        status: 'error', 
-        message: error instanceof Error ? error.message : 'SQL generation failed' 
-      });
-    }
-
-    setIsRunning(false);
-  };
-
-  const getStatusIcon = (status: TestResult['status']) => {
-    switch (status) {
-      case 'pending': return '⏳';
-      case 'success': return '✅';
-      case 'error': return '❌';
-    }
-  };
-
-  const getStatusColor = (status: TestResult['status']) => {
-    switch (status) {
-      case 'pending': return 'text-yellow-600';
-      case 'success': return 'text-green-600';
-      case 'error': return 'text-red-600';
-    }
-  };
-
+function MetricTable({ title, data, isLatency = false }: {
+  title: string; data: Record<string, number>; isLatency?: boolean;
+}) {
+  if (!data || Object.keys(data).length === 0) return null;
+  const maxVal = isLatency ? Math.max(...Object.values(data)) : 1;
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[80vh] overflow-auto">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-xl font-bold">API Debug Panel</h2>
-          <button 
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-xl"
-          >
-            ×
-          </button>
-        </div>
-
-        <div className="mb-4">
-          <p className="text-sm text-gray-600 mb-2">
-            API URL: <code className="bg-gray-100 px-2 py-1 rounded">{getApiUrl('/')}</code>
-          </p>
-          <button
-            onClick={runDiagnostics}
-            disabled={isRunning}
-            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50"
-          >
-            {isRunning ? 'Running Tests...' : 'Run Diagnostics'}
-          </button>
-        </div>
-
-        {tests.length > 0 && (
-          <div className="space-y-3">
-            {tests.map((test, index) => (
-              <div key={index} className="border rounded p-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-lg">{getStatusIcon(test.status)}</span>
-                    <span className="font-medium">{test.name}</span>
-                  </div>
-                  {test.duration && (
-                    <span className="text-xs text-gray-500">{test.duration}ms</span>
-                  )}
-                </div>
-                {test.message && (
-                  <p className={`text-sm mt-1 ${getStatusColor(test.status)}`}>
-                    {test.message}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="mt-6 text-sm text-gray-600">
-          <h3 className="font-medium mb-2">Troubleshooting Tips:</h3>
-          <ul className="list-disc list-inside space-y-1">
-            <li>Make sure FastAPI is running: <code>python app.py</code></li>
-            <li>Check the backend console for error messages</li>
-            <li>Verify your Google API key is set in the backend</li>
-            <li>Ensure the database file exists and is accessible</li>
-            <li>Check browser console for additional error details</li>
-          </ul>
-        </div>
+    <div className="mb-4">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{title}</p>
+      <div className="space-y-2">
+        {Object.entries(data)
+          .sort(([, a], [, b]) => (isLatency ? a - b : b - a))
+          .map(([label, val]) => (
+            <div key={label}>
+              <span className="text-xs text-gray-600 font-medium">{label}</span>
+              <ScoreBar value={val} max={maxVal} />
+            </div>
+          ))}
       </div>
     </div>
   );
-}; 
+}
+
+function EmptyTab() {
+  return <div className="py-10 text-center text-sm text-gray-400">No data for this section in the latest run.</div>;
+}
+
+// ── Eval sections ──────────────────────────────────────────────────────────
+
+function LlmSection({ data }: { data: any }) {
+  if (!data) return <EmptyTab />;
+  return (
+    <div className="space-y-4">
+      <MetricTable title="RAG Answer Relevance" data={data.rag_relevance ?? {}} />
+      <MetricTable title="SQL Accuracy" data={data.sql_accuracy ?? {}} />
+      <MetricTable title="Avg Latency (ms)" data={data.avg_latency_ms ?? {}} isLatency />
+    </div>
+  );
+}
+
+function RagPerfSection({ data }: { data: any }) {
+  if (!data) return <EmptyTab />;
+  return (
+    <div className="space-y-4">
+      <MetricTable title="Answer Relevance by Variant" data={data.answer_relevance ?? {}} />
+      <MetricTable title="Avg Latency (ms)" data={data.avg_latency_ms ?? {}} isLatency />
+    </div>
+  );
+}
+
+function AgentSection({ data }: { data: any }) {
+  if (!data) return <EmptyTab />;
+  const acc = data.routing_accuracy ?? {};
+  const overall = acc.overall;
+  return (
+    <div className="space-y-4">
+      {overall !== undefined && (
+        <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
+          <BarChart2 size={18} className="text-blue-500 shrink-0" />
+          <div className="flex-1">
+            <p className="text-xs text-gray-500 mb-1">Overall Routing Accuracy</p>
+            <ScoreBar value={overall} />
+          </div>
+        </div>
+      )}
+      <MetricTable
+        title="Accuracy by Route"
+        data={Object.fromEntries(Object.entries(acc).filter(([k]) => k !== 'overall') as [string, number][])}
+      />
+    </div>
+  );
+}
+
+// ── Diagnostics section ────────────────────────────────────────────────────
+
+type DiagStatus = 'ok' | 'error' | 'misconfigured' | 'not_configured' | 'index_missing';
+
+function StatusDot({ status }: { status: DiagStatus | boolean }) {
+  const ok = status === 'ok' || status === true;
+  const warn = status === 'misconfigured' || status === 'not_configured' || status === 'index_missing';
+  if (ok) return <CheckCircle size={14} className="text-green-500 shrink-0" />;
+  if (warn) return <AlertCircle size={14} className="text-amber-400 shrink-0" />;
+  return <XCircle size={14} className="text-red-500 shrink-0" />;
+}
+
+function DiagRow({ icon, label, status, detail }: {
+  icon: React.ReactNode; label: string; status: DiagStatus | boolean; detail?: string;
+}) {
+  return (
+    <div className="flex items-start gap-3 py-3 border-b last:border-0">
+      <div className="mt-0.5 text-gray-400">{icon}</div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-gray-700">{label}</span>
+          <StatusDot status={status} />
+        </div>
+        {detail && <p className="text-xs text-gray-500 mt-0.5 truncate">{detail}</p>}
+      </div>
+    </div>
+  );
+}
+
+function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: boolean; onRun: () => void }) {
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 text-gray-400">
+        <RefreshCw size={20} className="animate-spin mb-2" />
+        <span className="text-sm">Running diagnostics…</span>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="flex flex-col items-center justify-center py-12 gap-3">
+        <p className="text-sm text-gray-500">Click to run a live system check.</p>
+        <button
+          onClick={onRun}
+          className="px-4 py-2 bg-blue-500 text-white text-sm rounded-lg hover:bg-blue-600 transition-colors"
+        >
+          Run Diagnostics
+        </button>
+      </div>
+    );
+  }
+
+  if (data.error) {
+    return (
+      <div className="flex flex-col items-center py-10 gap-2 text-center">
+        <XCircle size={28} className="text-red-400" />
+        <p className="text-sm text-gray-600">{data.error}</p>
+        <button onClick={onRun} className="text-xs text-blue-500 hover:underline mt-1">Retry</button>
+      </div>
+    );
+  }
+
+  const db = data.databricks ?? {};
+  const kb = data.knowledge_base ?? {};
+  const llms: any[] = data.llm_models ?? [];
+  const availableLlms = llms.filter(m => m.available);
+  const unavailableLlms = llms.filter(m => !m.available);
+
+  return (
+    <div>
+      {/* Databricks */}
+      <DiagRow
+        icon={<Database size={15} />}
+        label="Databricks"
+        status={db.status ?? 'error'}
+        detail={db.message}
+      />
+
+      {/* Knowledge base */}
+      <DiagRow
+        icon={<BookOpen size={15} />}
+        label="Knowledge Base (RAG)"
+        status={kb.status ?? 'not_configured'}
+        detail={
+          kb.status === 'ok'
+            ? `${kb.chunk_count ?? 0} chunks · ${kb.embed_model ?? ''}`
+            : kb.status === 'not_configured'
+            ? 'RAG_EMBED_DIR not set'
+            : kb.status === 'index_missing'
+            ? 'FAISS index missing — re-index PDFs'
+            : undefined
+        }
+      />
+      {kb.latest_file && (
+        <div className="ml-7 mb-1 text-xs text-gray-400">
+          Latest file: <span className="font-medium text-gray-600">{kb.latest_file.name}</span>
+          <span className="ml-1">({kb.latest_file.updated})</span>
+        </div>
+      )}
+
+      {/* LLMs */}
+      <div className="py-3 border-b">
+        <div className="flex items-center gap-2 mb-2">
+          <Cpu size={15} className="text-gray-400" />
+          <span className="text-sm font-medium text-gray-700">LLM Availability</span>
+        </div>
+        <div className="ml-5 space-y-1.5">
+          {availableLlms.map(m => (
+            <div key={m.id} className="flex items-center gap-2 text-xs text-gray-600">
+              <CheckCircle size={12} className="text-green-500 shrink-0" />
+              <span className="font-medium">{m.display_name}</span>
+              <span className="text-gray-400">({m.provider})</span>
+            </div>
+          ))}
+          {unavailableLlms.map(m => (
+            <div key={m.id} className="flex items-center gap-2 text-xs text-gray-400">
+              <XCircle size={12} className="text-red-400 shrink-0" />
+              <span>{m.display_name}</span>
+              <span className="italic">— {m.reason}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <button
+        onClick={onRun}
+        className="mt-4 w-full text-xs text-blue-500 hover:underline text-center"
+      >
+        Re-run diagnostics
+      </button>
+    </div>
+  );
+}
+
+// ── Main panel ─────────────────────────────────────────────────────────────
+
+type Tab = 'diag' | 'llms' | 'rag' | 'agent';
+
+export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
+  const [evalResults, setEvalResults] = useState<any>(null);
+  const [evalLoading, setEvalLoading] = useState(true);
+  const [diagData, setDiagData] = useState<any>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>('diag');
+
+  const loadEval = async () => {
+    setEvalLoading(true);
+    const data = await ApiService.getEvalResults();
+    setEvalResults(data);
+    setEvalLoading(false);
+  };
+
+  const runDiag = async () => {
+    setDiagLoading(true);
+    const data = await ApiService.getDiagnostics();
+    setDiagData(data);
+    setDiagLoading(false);
+  };
+
+  const handleRefresh = () => {
+    if (activeTab === 'diag') runDiag();
+    else loadEval();
+  };
+
+  useEffect(() => { loadEval(); }, []);
+
+  const tabs: { id: Tab; label: string }[] = [
+    { id: 'diag',  label: 'Diagnostics' },
+    { id: 'llms',  label: 'LLM Comparison' },
+    { id: 'rag',   label: 'RAG Pipeline' },
+    { id: 'agent', label: 'Routing' },
+  ];
+
+  const isEvalTab = activeTab !== 'diag';
+  const evalMeta = isEvalTab && evalResults && !evalResults.error;
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-xl w-[540px] max-h-[82vh] flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <h2 className="font-semibold text-gray-800 text-sm">System Panel</h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleRefresh}
+              disabled={diagLoading || evalLoading}
+              className="p-1.5 rounded hover:bg-gray-100 text-gray-500 disabled:opacity-40"
+              title="Refresh"
+            >
+              <RefreshCw size={14} className={(diagLoading || evalLoading) ? 'animate-spin' : ''} />
+            </button>
+            <button onClick={onClose} className="p-1.5 rounded hover:bg-gray-100 text-gray-500 text-lg leading-none">×</button>
+          </div>
+        </div>
+
+        {/* Eval meta row */}
+        {evalMeta && (
+          <div className="flex items-center gap-3 px-5 py-2 bg-gray-50 border-b text-xs text-gray-500">
+            <Clock size={12} />
+            <span>{evalResults.timestamp ?? '—'}</span>
+            {evalResults.model && <><span className="text-gray-300">|</span><span className="font-medium text-gray-600">{evalResults.model}</span></>}
+            {evalResults.mode && <><span className="text-gray-300">|</span><span>mode: {evalResults.mode}</span></>}
+          </div>
+        )}
+
+        {/* Tabs */}
+        <div className="flex border-b px-5 overflow-x-auto">
+          {tabs.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`py-2.5 px-3 text-xs font-medium border-b-2 whitespace-nowrap mr-1 transition-colors ${
+                activeTab === tab.id
+                  ? 'border-blue-500 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto p-5">
+          {activeTab === 'diag' && (
+            <DiagnosticsSection data={diagData} loading={diagLoading} onRun={runDiag} />
+          )}
+          {activeTab === 'llms' && (
+            evalLoading
+              ? <div className="flex items-center justify-center py-16 text-gray-400"><RefreshCw size={20} className="animate-spin mr-2" /><span className="text-sm">Loading…</span></div>
+              : evalResults?.error
+              ? <EvalError />
+              : <LlmSection data={evalResults?.eval_llms} />
+          )}
+          {activeTab === 'rag' && (
+            evalLoading
+              ? <div className="flex items-center justify-center py-16 text-gray-400"><RefreshCw size={20} className="animate-spin mr-2" /><span className="text-sm">Loading…</span></div>
+              : evalResults?.error
+              ? <EvalError />
+              : <RagPerfSection data={evalResults?.eval_rag_perf} />
+          )}
+          {activeTab === 'agent' && (
+            evalLoading
+              ? <div className="flex items-center justify-center py-16 text-gray-400"><RefreshCw size={20} className="animate-spin mr-2" /><span className="text-sm">Loading…</span></div>
+              : evalResults?.error
+              ? <EvalError />
+              : <AgentSection data={evalResults?.eval_agentic} />
+          )}
+        </div>
+
+        {/* Footer */}
+        {isEvalTab && !evalLoading && !evalResults?.error && (
+          <div className="px-5 py-3 border-t bg-gray-50 text-xs text-gray-400 text-center">
+            Re-run: <span className="font-mono">python -m scripts.run_eval --model gpt-4o</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+function EvalError() {
+  return (
+    <div className="flex flex-col items-center justify-center py-12 text-center">
+      <AlertCircle size={32} className="text-amber-400 mb-3" />
+      <p className="text-sm text-gray-600 mb-1">No eval results found</p>
+      <p className="text-xs text-gray-400">Run from the project root:</p>
+      <code className="mt-2 text-xs bg-gray-100 px-3 py-1.5 rounded text-gray-700 font-mono">
+        python -m scripts.run_eval
+      </code>
+    </div>
+  );
+}

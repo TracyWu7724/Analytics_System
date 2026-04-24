@@ -24,6 +24,7 @@ except Exception:
 
 from ..state import AgentState
 
+
 _ROUTER_PROMPT = """\
 You are a routing agent for a Decision Support System.
 
@@ -49,34 +50,61 @@ Question: {question}
 """
 
 
+def _clean_llm_output(raw: str) -> str:
+    """Strip thinking blocks and markdown fences that small models emit."""
+    # Remove <think>...</think> blocks (Qwen3 and other reasoning models)
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    # Remove markdown code fences
+    raw = re.sub(r"```(?:json)?\s*", "", raw)
+    return raw.strip()
+
+
+def _parse_route(raw: str, question: str) -> tuple[str, str]:
+    """Extract (route, reasoning) from raw LLM output, with graceful fallbacks."""
+    cleaned = _clean_llm_output(raw)
+
+    # Try JSON first
+    json_match = re.search(r"\{.*?\}", cleaned, re.DOTALL)
+    if json_match:
+        try:
+            parsed = json.loads(json_match.group())
+            route = str(parsed.get("route", "")).lower().strip()
+            reasoning = parsed.get("reasoning", "")
+            if route in ("sql", "rag", "both"):
+                return route, reasoning
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: look for a bare route word in the cleaned output
+    for candidate in ("both", "rag", "sql"):  # order matters: most specific first
+        if re.search(rf'\b{candidate}\b', cleaned, re.IGNORECASE):
+            return candidate, "extracted from plain-text response"
+
+    return _fallback_route(question), "keyword-based fallback"
+
+
 def router_node(state: AgentState) -> dict:
-    """LangGraph node: classify the question and set state["route"]."""
-    llm_model = state.get("llm_model", "gemini-2.5-flash")
+    """LangGraph node: classify the question and set state["route"].
+
+    Uses the user's chosen model for routing, falling back to keyword matching
+    if the LLM call fails.
+    """
     question = state["question"]
+    user_model = state.get("llm_model", "gemini-2.5-flash")
 
     try:
-        llm = get_llm(llm_model)
+        llm = get_llm(user_model)
         response = llm.invoke(_ROUTER_PROMPT.format(question=question))
-        raw = response.content.strip()
-
-        # Extract JSON even if LLM wraps it in markdown fences
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if json_match:
-            parsed = json.loads(json_match.group())
-            route = parsed.get("route", "sql").lower()
-            reasoning = parsed.get("reasoning", "")
-        else:
-            route, reasoning = _fallback_route(question), "keyword-based fallback"
-
-        # Normalise to valid values
-        if route not in ("sql", "rag", "both"):
-            route = _fallback_route(question)
-
+        route, reasoning = _parse_route(response.content, question)
+        return {"route": route, "route_reasoning": reasoning}
     except Exception:
-        route = _fallback_route(question)
-        reasoning = "error in router — used keyword fallback"
+        pass
 
-    return {"route": route, "route_reasoning": reasoning}
+    # Model failed — use keyword heuristic
+    return {
+        "route": _fallback_route(question),
+        "route_reasoning": "error in router — used keyword fallback",
+    }
 
 
 # ---------------------------------------------------------------------------

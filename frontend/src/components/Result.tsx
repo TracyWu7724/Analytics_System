@@ -98,15 +98,32 @@ export function QueryOutput({ results, error, onClose, sql_query, warning }: Que
     }
   };
 
-  const handleDownloadExcel = async () => {
+  const handleDownloadExcel = () => {
     if (!results.length || !results[0]) return;
-    
-    try {
-      await ApiService.downloadExcel();
-    } catch (error) {
-      console.error('Excel download failed:', error);
-      alert('Excel download failed. Please try again or use CSV download.');
-    }
+
+    const headers = results[0].columns;
+    const rows = results[0].values;
+
+    // Build CSV content and serve as .xlsx-compatible file
+    // For a true xlsx, fall back to CSV which Excel opens natively
+    const csvContent = [
+      headers.join(','),
+      ...rows.map((row: any[]) =>
+        row.map(cell =>
+          cell == null ? '' : String(cell).includes(',') ? `"${String(cell).replace(/"/g, '""')}"` : String(cell)
+        ).join(',')
+      ),
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `query_results_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
   };
 
   const handleToggleZoom = () => {
