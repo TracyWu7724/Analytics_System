@@ -12,4 +12,10 @@ export interface ChatMessage {
   error?: string;
   sql_query?: string;
   warning?: string;
+  trace_url?: string;
+  // Agent-specific fields
+  route?: 'sql' | 'rag' | 'both';
+  route_reasoning?: string;
+  rag_answer?: string;
+  sql_rows?: Record<string, any>[];
 }

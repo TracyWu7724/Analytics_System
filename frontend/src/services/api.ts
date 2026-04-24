@@ -99,7 +99,7 @@ export class ApiService {
     }
   }
   
-  static async executeNaturalLanguageQuery(question: string, uploadedTable?: string, llmModel?: string): Promise<{ results?: QueryResult[], error?: string, warning?: string, sql_query?: string }> {
+  static async executeNaturalLanguageQuery(question: string, uploadedTable?: string, llmModel?: string): Promise<{ results?: QueryResult[], error?: string, warning?: string, sql_query?: string, trace_url?: string }> {
     console.log(`🔍 [API] Starting natural language query: "${question}", uploaded table: "${uploadedTable}"`);
     const startTime = Date.now();
     
@@ -147,36 +147,26 @@ export class ApiService {
       if (data.rows && data.rows.length > 0) {
         const columns = Object.keys(data.rows[0]);
         const values = data.rows.map(row => columns.map(col => row[col]));
-        
-        const result: { results?: QueryResult[], error?: string, warning?: string, sql_query?: string } = {
-          results: [{
-            columns,
-            values
-          }],
-          sql_query: data.sql_query
+
+        const result: { results?: QueryResult[], error?: string, warning?: string, sql_query?: string, trace_url?: string } = {
+          results: [{ columns, values }],
+          sql_query: data.sql_query,
         };
-        
-        // Include warning if present
-        if (data.warning) {
-          result.warning = data.warning;
-        }
-        
+
+        if (data.warning) result.warning = data.warning;
+        if (data.trace_url) result.trace_url = data.trace_url;
+
         return result;
       } else {
         console.log(`[API] Query returned no results`);
-        const result: { results?: QueryResult[], error?: string, warning?: string, sql_query?: string } = {
-          results: [{
-            columns: [],
-            values: []
-          }],
-          sql_query: data.sql_query
+        const result: { results?: QueryResult[], error?: string, warning?: string, sql_query?: string, trace_url?: string } = {
+          results: [{ columns: [], values: [] }],
+          sql_query: data.sql_query,
         };
-        
-        // Include warning even for empty results
-        if (data.warning) {
-          result.warning = data.warning;
-        }
-        
+
+        if (data.warning) result.warning = data.warning;
+        if (data.trace_url) result.trace_url = data.trace_url;
+
         return result;
       }
 
@@ -232,6 +222,55 @@ export class ApiService {
   }
 
 
+
+  static async executeAgentQuery(
+    question: string,
+    uploadedTable?: string,
+    llmModel?: string,
+    history: { role: string; content: string }[] = [],
+  ): Promise<{
+    route?: string;
+    route_reasoning?: string;
+    final_answer?: string;
+    sql_query?: string;
+    sql_rows?: Record<string, any>[];
+    sql_table?: string;
+    rag_chunks?: { text: string; score: number; source: string }[];
+    error?: string;
+    trace_url?: string;
+  }> {
+    try {
+      const body: any = { question, history };
+      if (uploadedTable) body.uploaded_table = uploadedTable;
+      if (llmModel) body.llm_model = llmModel;
+
+      const response = await fetchWithTimeout(getApiUrl('/agent/query'), {
+        method: 'POST',
+        headers: API_CONFIG.HEADERS,
+        body: JSON.stringify(body),
+      }, API_CONFIG.TIMEOUT);
+
+      if (!response.ok) {
+        const errorData: ApiError = await response.json();
+        return { error: formatErrorForDisplay(errorData.detail || errorData) };
+      }
+
+      const data = await response.json();
+      return {
+        route: data.route,
+        route_reasoning: data.route_reasoning,
+        final_answer: data.final_answer,
+        sql_query: data.sql_query,
+        sql_rows: data.sql_rows,
+        sql_table: data.sql_table,
+        rag_chunks: data.rag_chunks,
+        error: data.error,
+        trace_url: data.trace_url,
+      };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Network error' };
+    }
+  }
 
   static async downloadCSV(): Promise<void> {
     try {
@@ -313,7 +352,7 @@ export class ApiService {
       return await response.json();
     } catch (error) {
       console.error('[API] Failed to fetch LLM models:', error);
-      return { models: [], default: 'gemini-1.5-pro' };
+      return { models: [], default: 'gemini-2.5-flash' };
     }
   }
 

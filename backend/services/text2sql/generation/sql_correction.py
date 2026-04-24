@@ -1,3 +1,25 @@
+import re
+
+
+_FORBIDDEN = re.compile(
+    r"\b(DROP\s+TABLE|DROP\s+DATABASE|TRUNCATE|DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\w|ALTER\s+TABLE|CREATE\s+TABLE|EXEC\s*\(|EXECUTE\s*\(|xp_cmdshell)\b",
+    re.IGNORECASE,
+)
+
+
+def validate_sql_server_query(sql: str) -> str:
+    """
+    Reject statements that would mutate or destroy data.
+
+    Raises ValueError for DML/DDL other than SELECT.
+    Returns the query unchanged if it passes.
+    """
+    m = _FORBIDDEN.search(sql)
+    if m:
+        raise ValueError(f"Disallowed SQL operation detected: '{m.group()}'")
+    return sql
+
+
 def clean_sql_query(raw_sql: str) -> str:
     """
     Clean and validate SQL query

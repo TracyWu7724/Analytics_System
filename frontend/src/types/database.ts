@@ -11,6 +11,7 @@ export interface ApiQueryResponse {
   count: number;
   raw_result: string;
   warning?: string;
+  trace_url?: string;
 }
 
 export interface ApiError {

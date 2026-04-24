@@ -1,6 +1,52 @@
-/data
+# Data & embeddings
+data/
+dataset/
+eval_results/
 
+# Python
 .venv
 venv
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
+# Environment
+.env
+.env.*
+!.env.example
+
+# Node
 node_modules/
+frontend/build/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# LangSmith / LangChain cache
+.langchain.db
+langchain.db

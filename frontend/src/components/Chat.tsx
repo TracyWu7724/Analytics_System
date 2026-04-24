@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Bot, User, Settings, Upload, FileSpreadsheet, FileText, X, ChevronDown } from 'lucide-react';
+import { Send, ArrowLeft, Bot, User, Settings, Upload, FileSpreadsheet, FileText, X, ChevronDown, ExternalLink } from 'lucide-react';
 import { QueryOutput } from './Result';
 import Sidebar from './Sidebar';
 import { DebugPanel } from './DebugPanel';
@@ -109,7 +109,7 @@ const Chat: React.FC<ChatProps> = ({ initialQuery = '', uploadedTable }) => {
     }
   }, [uploadedTable, messages.length, initialQuery]);
 
-     const executeQuery = async (query: string, tableToUse?: string): Promise<{ results?: QueryResult[], error?: string, sql_query?: string, warning?: string }> => {
+     const executeQuery = async (query: string, tableToUse?: string): Promise<{ results?: QueryResult[], error?: string, sql_query?: string, warning?: string, trace_url?: string }> => {
      try {
        setLoadingStep('Analyzing your question...');
        // Add a small delay to show the step
@@ -209,14 +209,14 @@ const Chat: React.FC<ChatProps> = ({ initialQuery = '', uploadedTable }) => {
       // Determine which table to use for the query based on message context
       // Only use uploaded table if this message is specifically about uploaded data
       const tableForQuery = isFileUploadQuery ? (uploadedTableName || uploadedTable) : undefined;
-      const { results, error, sql_query, warning } = await executeQuery(messageContent, tableForQuery);
-      
+      const { results, error, sql_query, warning, trace_url } = await executeQuery(messageContent, tableForQuery);
+
       const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
-        content: error 
-          ? 'I encountered an error while executing your query.' 
-          : results && results.length > 0 
+        content: error
+          ? 'I encountered an error while executing your query.'
+          : results && results.length > 0
             ? `Found ${results[0].values.length} results for your query.`
             : 'Query executed successfully.',
         timestamp: new Date(),
@@ -224,6 +224,7 @@ const Chat: React.FC<ChatProps> = ({ initialQuery = '', uploadedTable }) => {
         error,
         sql_query,
         warning,
+        trace_url,
       };
 
       setMessages(prev => prev.slice(0, -1).concat(assistantMessage));
@@ -466,14 +467,28 @@ const Chat: React.FC<ChatProps> = ({ initialQuery = '', uploadedTable }) => {
                         sql_query={message.sql_query}
                         warning={message.warning}
                         onClose={() => {
-                          // Remove the results from this message
-                          setMessages(prev => prev.map(msg => 
-                            msg.id === message.id 
+                          setMessages(prev => prev.map(msg =>
+                            msg.id === message.id
                               ? { ...msg, results: undefined, error: undefined, sql_query: undefined, warning: undefined }
                               : msg
                           ));
                         }}
                       />
+                    </div>
+                  )}
+
+                  {/* LangSmith trace link */}
+                  {message.trace_url && !message.isLoading && (
+                    <div className="mt-2 px-1">
+                      <a
+                        href={message.trace_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        View trace in LangSmith
+                      </a>
                     </div>
                   )}
                 </div>

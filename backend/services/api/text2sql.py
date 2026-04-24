@@ -1,8 +1,11 @@
+import asyncio
 import io
 import os
 import sqlite3
 import tempfile
+import threading
 from datetime import datetime
+from typing import Optional
 
 import pandas as pd
 import uvicorn
@@ -10,12 +13,55 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+# Load .env FIRST so LANGCHAIN_API_KEY is available before anything else reads it
+load_dotenv()
+
+# LangSmith tracing — optional; silently disabled when the API key is absent
+_LANGSMITH_ENABLED = bool(os.getenv("LANGCHAIN_API_KEY"))
+_ls_client = None
+
+try:
+    from langsmith import Client, traceable
+    from langsmith.run_helpers import get_current_run_tree
+
+    if _LANGSMITH_ENABLED:
+        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+        _ls_client = Client()
+except ImportError:
+    _LANGSMITH_ENABLED = False
+
+
+def _share_run(run_id: Optional[str]) -> Optional[str]:
+    """Return a public LangSmith URL for run_id, or None if unavailable.
+
+    LangSmith ingests runs asynchronously, so we flush the local buffer then
+    retry a few times to give the server time to process the run before sharing.
+    """
+    if not _ls_client or not run_id:
+        return None
+    try:
+        _ls_client.flush()
+    except Exception:
+        pass
+    import time
+    for wait in [1, 2, 3]:
+        time.sleep(wait)
+        try:
+            return _ls_client.share_run(run_id)
+        except Exception:
+            continue
+    return None
+
+
+_tl_run_id = threading.local()  # stores the last captured run_id per thread
+
 try:
     from ..text2sql.db.databricks_service import DatabricksService
     from ..text2sql.db.upload_service import UploadService
     from ..text2sql.generation.llm_registry import list_llm_models
     from ..text2sql.generation.sql_correction import clean_sql_query
     from ..text2sql.generation.sql_generation import detect_large_dataset_request, generate_sql
+    from ..text2sql.indexing.history_question_indexing import ensure_sql_column, index_question_background
     from ..text2sql.models import QueryRequest
     from ..text2sql.retrieval.history_question_retrieval import get_relevant_query_history
     from ..text2sql.retrieval.table_matching import extract_table_name_from_question, get_all_available_tables, get_relevant_tables, invalidate_table_cache
@@ -25,12 +71,20 @@ except ImportError:
     from generation.llm_registry import list_llm_models
     from generation.sql_correction import clean_sql_query
     from generation.sql_generation import detect_large_dataset_request, generate_sql
+    from indexing.history_question_indexing import ensure_sql_column, index_question_background
     from models import QueryRequest
     from retrieval.history_question_retrieval import get_relevant_query_history
     from retrieval.table_matching import extract_table_name_from_question, get_all_available_tables, get_relevant_tables, invalidate_table_cache
 
+try:
+    from observability.metrics.costs import cost_tracker
+    from observability.metrics.sys_perf import perf
+    _METRICS_ENABLED = True
+except Exception:
+    cost_tracker = None
+    perf = None
+    _METRICS_ENABLED = False
 
-load_dotenv()
 
 app = FastAPI(title="SQL Query API", description="API for natural language to SQL queries", version="1.0.0")
 app.add_middleware(
@@ -41,14 +95,43 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Latency middleware — records every request under "http.<METHOD>.<path>"
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+
+class LatencyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        if perf is not None:
+            operation = f"http.{request.method}.{request.url.path}"
+            async with perf.ameasure(operation):
+                return await call_next(request)
+        return await call_next(request)
+
+app.add_middleware(LatencyMiddleware)
+
 last_query_results: list[dict] = []
 data_service = DatabricksService()
 data_service.init_local_db()
+ensure_sql_column(data_service.local_db_path)
 upload_service = UploadService(data_service)
 
 
-def save_query_to_history_background(query_text: str):
-    data_service.save_query_to_history(query_text)
+# ---------------------------------------------------------------------------
+# Traced SQL generation (no-op wrapper when LangSmith is disabled)
+# ---------------------------------------------------------------------------
+
+if _LANGSMITH_ENABLED:
+    @traceable(run_type="chain", name="text2sql-pipeline")
+    def _traced_generate_sql(question, table_name, columns, custom_limit, llm_model):
+        rt = get_current_run_tree()
+        _tl_run_id.value = str(rt.id) if rt else None
+        raw_sql = generate_sql(question, table_name, columns, custom_limit, llm_model)
+        return clean_sql_query(raw_sql)
+else:
+    def _traced_generate_sql(question, table_name, columns, custom_limit, llm_model):
+        _tl_run_id.value = None
+        raw_sql = generate_sql(question, table_name, columns, custom_limit, llm_model)
+        return clean_sql_query(raw_sql)
 
 
 def get_table_columns(table_name: str) -> list[str] | None:
@@ -187,8 +270,12 @@ async def generate_sql_endpoint(request: QueryRequest):
         is_large_request, custom_limit, _ = detect_large_dataset_request(request.question)
         question, table_name, table_candidates, related_queries = prepare_question(request.question, request.uploaded_table)
 
-        raw_sql = generate_sql(question, table_name, get_table_columns(table_name), custom_limit, request.llm_model)
-        sql_query = clean_sql_query(raw_sql)
+        _tl_run_id.value = None
+        # Run sync in event loop thread so _tl_run_id.value is set in the same thread we read it from
+        sql_query = _traced_generate_sql(question, table_name, get_table_columns(table_name), custom_limit, request.llm_model)
+        # Offload the flush+retry wait to a thread so we don't block the event loop
+        run_id = getattr(_tl_run_id, "value", None)
+        trace_url = await asyncio.to_thread(_share_run, run_id)
 
         response = {
             "question": request.question,
@@ -196,6 +283,7 @@ async def generate_sql_endpoint(request: QueryRequest):
             "table_name": table_name,
             "table_candidates": table_candidates,
             "related_queries": related_queries,
+            "trace_url": trace_url,
         }
         if is_large_request:
             response["warning"] = "Large result set requested; execution may take longer than usual."
@@ -212,8 +300,10 @@ async def execute_natural_language_query(request: QueryRequest, background_tasks
         is_large_request, custom_limit, suggested_timeout = detect_large_dataset_request(request.question)
         question, table_name, table_candidates, related_queries = prepare_question(request.question, request.uploaded_table)
 
-        raw_sql = generate_sql(question, table_name, get_table_columns(table_name), custom_limit, request.llm_model)
-        sql_query = clean_sql_query(raw_sql)
+        _tl_run_id.value = None
+        sql_query = _traced_generate_sql(question, table_name, get_table_columns(table_name), custom_limit, request.llm_model)
+        run_id = getattr(_tl_run_id, "value", None)
+        trace_url = await asyncio.to_thread(_share_run, run_id)
 
         if table_name.startswith("uploaded_"):
             result_rows = data_service.query_uploaded_table(sql_query)
@@ -221,7 +311,7 @@ async def execute_natural_language_query(request: QueryRequest, background_tasks
             result_rows = data_service.execute_query(sql_query, timeout_seconds=min(suggested_timeout, 300), custom_limit=custom_limit)
 
         last_query_results = result_rows
-        background_tasks.add_task(save_query_to_history_background, request.question)
+        background_tasks.add_task(index_question_background, request.question, data_service, sql_query)
 
         response = {
             "question": request.question,
@@ -231,6 +321,7 @@ async def execute_natural_language_query(request: QueryRequest, background_tasks
             "raw_result": f"Retrieved {len(result_rows)} rows",
             "table_candidates": table_candidates,
             "related_queries": related_queries,
+            "trace_url": trace_url,
         }
         if is_large_request:
             response["warning"] = "Large result set requested; execution may take longer than usual."
@@ -320,6 +411,16 @@ async def delete_uploaded_table(table_name: str):
 
     invalidate_table_cache()
     return {"success": True, "message": result["message"], "table_name": table_name}
+
+
+@app.get("/metrics")
+async def get_metrics():
+    """Return live cost and latency metrics for this server process."""
+    return {
+        "enabled": _METRICS_ENABLED,
+        "costs": cost_tracker.summary() if cost_tracker else {},
+        "latency": perf.all_stats() if perf else [],
+    }
 
 
 @app.options("/{path:path}")

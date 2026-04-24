@@ -1,13 +1,14 @@
 import React, { useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { BookOpen, Database } from "lucide-react";
+import { BookOpen, Database, Zap } from "lucide-react";
 import Sidebar from "./Sidebar";
 import SearchBar from "./SearchBar";
 
 const NAV_ITEMS = [
   { label: "RAG Q&A",     path: "/rag-qa",   Icon: BookOpen },
   { label: "Text to SQL", path: "/text2sql", Icon: Database },
+  { label: "Agent (Beta)",        path: "/agent",    Icon: Zap },
 ];
 
 const Home: React.FC = () => {
@@ -67,7 +68,7 @@ const Home: React.FC = () => {
                     exit={{ opacity: 0 }}
                     className="text-2xl md:text-4xl lg:text-5xl font-bold mb-4 md:mb-6 tracking-tight text-gray-900" style={{ color: '#113D73' }}
                   >
-                    Text-to-SQL for Analytics and Insights
+                    Decision System for Analytics and Insights
                     
                   </motion.h1>
                   <motion.p 

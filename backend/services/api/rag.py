@@ -1,185 +1,221 @@
+from contextlib import asynccontextmanager
+import traceback
+
+import pathlib
+from dotenv import load_dotenv
+load_dotenv(pathlib.Path(__file__).resolve().parent / ".env")
+
+from fastapi import FastAPI, Depends, HTTPException, status
+import asyncio
 import os
-import streamlit as st
-import requests
+import uuid
 
-API_BASE = os.environ.get("API_BASE", "http://localhost:8000")
+from .services.faiss_rag import myRAG_vLLM, myRAG_API
+from .db import init_db, async_session, crud
+from .db.models import User
+from .auth import get_current_user, hash_password
+from .schemas import (
+    AskRequest, AskResponse, UserCreate, UserResponse,
+    ConversationSummary, ConversationDetail,
+)
 
-AVAILABLE_MODELS = [
-    "BAAI_bge-base-en-v1-5",
-    "intfloat_e5-base-v2",
-    "nomic-ai_nomic-embed-text-v1",
-    "sentence-transformers_all-MiniLM-L6-v2",
-]
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+EMBEDDINGS_DIR = os.getenv("EMBEDDINGS_DIR", os.path.join(BASE_DIR, "embeddings"))
 
-AVAILABLE_LLM_MODELS = [
+rag_cache = {}
+
+MODEL_NAME_MAP = {
+    "BAAI_bge-base-en-v1-5": "BAAI/bge-base-en-v1.5",
+    "intfloat_e5-base-v2": "intfloat/e5-base-v2",
+    "nomic-ai_nomic-embed-text-v1": "nomic-ai/nomic-embed-text-v1",
+    "sentence-transformers_all-MiniLM-L6-v2": "sentence-transformers/all-MiniLM-L6-v2",
+}
+
+
+LLM_MODELS = [
     "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-pro",
     "gemma-3-27b-it",
     "gemma-3-12b-it",
     "gemma-3-4b-it",
     "Qwen2.5-0.5B-Instruct",
 ]
 
-st.set_page_config(page_title="Henkel Adhesive Chatbot", layout="centered")
+LOCAL_LLM_MODELS = {
+    "Qwen2.5-0.5B-Instruct": "Qwen/Qwen2.5-0.5B-Instruct",
+}
 
 
-# ── Helper: auth header ───────────────────────────────────────────
-def _auth():
-    return (st.session_state.get("username", ""), st.session_state.get("password", ""))
+def load_rag(model_name: str, llm_model: str = "gemini-2.5-flash"):
+    cache_key = f"{model_name}::{llm_model}"
+    if cache_key in rag_cache:
+        return rag_cache[cache_key]
 
+    meta_path = f"{EMBEDDINGS_DIR}/embeddings_{model_name}_meta_2.jsonl"
+    index_path = f"{EMBEDDINGS_DIR}/embeddings_{model_name}_2.index"
 
-def _logged_in():
-    return bool(st.session_state.get("logged_in"))
+    embed_model_name = MODEL_NAME_MAP.get(model_name)
+    if embed_model_name is None:
+        raise ValueError(f"Unknown embedding model: {model_name}")
 
+    if llm_model not in LLM_MODELS:
+        raise ValueError(f"Unknown LLM model: {llm_model}")
 
-# ── Sidebar: Login / Register ─────────────────────────────────────
-with st.sidebar:
-    st.header("Account")
-
-    if _logged_in():
-        st.success(f"Logged in as **{st.session_state['username']}**")
-        if st.button("Logout"):
-            for key in ["logged_in", "username", "password", "conversation_id", "history", "conversations"]:
-                st.session_state.pop(key, None)
-            st.rerun()
+    if llm_model in LOCAL_LLM_MODELS:
+        rag = myRAG_vLLM(
+            metadata_path=meta_path,
+            faiss_path=index_path,
+            llm_model_name=LOCAL_LLM_MODELS[llm_model],
+            embed_model_name=embed_model_name,
+            use_reranker=True,
+            reranker_model_name="Alibaba-NLP/gte-reranker-modernbert-base",
+        )
     else:
-        tab_login, tab_register = st.tabs(["Login", "Register"])
+        rag = myRAG_API(
+            metadata_path=meta_path,
+            faiss_path=index_path,
+            gemini_model_name=llm_model,
+            embed_model_name=embed_model_name,
+            use_reranker=True,
+            reranker_model_name="Alibaba-NLP/gte-reranker-modernbert-base",
+        )
 
-        with tab_login:
-            login_user = st.text_input("Username", key="login_user")
-            login_pass = st.text_input("Password", type="password", key="login_pass")
-            if st.button("Login"):
-                # Validate credentials by calling a protected endpoint
-                resp = requests.get(
-                    f"{API_BASE}/conversations", auth=(login_user, login_pass)
+    rag_cache[cache_key] = rag
+    return rag
+
+
+async def timeout_wrapper(fn, timeout=120):
+    try:
+        return await asyncio.wait_for(fn, timeout)
+    except asyncio.TimeoutError:
+        return "Session timed out due to inactivity."
+
+
+# ── App lifespan ───────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await init_db()
+        print("Database tables created.")
+    except Exception as e:
+        # Another instance may have already created the tables (race condition)
+        print(f"init_db skipped (tables likely already exist): {e}")
+    yield
+
+
+app = FastAPI(title="Henkel RAG API", lifespan=lifespan)
+
+
+# ── Auth endpoints ─────────────────────────────────────────────────
+
+@app.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register(body: UserCreate):
+    async with async_session() as session:
+        existing = await crud.get_user_by_username(session, body.username)
+        if existing:
+            raise HTTPException(status_code=400, detail="Username already taken")
+        hashed = hash_password(body.password)
+        user = await crud.create_user(session, body.username, hashed)
+        return user
+
+
+# ── Ask endpoint (POST with auth + conversation persistence) ──────
+
+@app.post("/ask", response_model=AskResponse)
+async def ask_post(body: AskRequest, user: User = Depends(get_current_user)):
+    try:
+        rag = load_rag(body.model_name, body.llm_model)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load RAG model: {e}")
+
+    try:
+        async with async_session() as session:
+            # Create or load conversation
+            if body.conversation_id is None:
+                # New conversation -- use first 60 chars of question as title
+                title = body.question[:60] + ("..." if len(body.question) > 60 else "")
+                conv = await crud.create_conversation(
+                    session, user.id, title, body.model_name, body.llm_model
                 )
-                if resp.status_code == 200:
-                    st.session_state["logged_in"] = True
-                    st.session_state["username"] = login_user
-                    st.session_state["password"] = login_pass
-                    st.rerun()
-                else:
-                    st.error("Invalid credentials")
-
-        with tab_register:
-            reg_user = st.text_input("Username", key="reg_user")
-            reg_pass = st.text_input("Password", type="password", key="reg_pass")
-            if st.button("Register"):
-                resp = requests.post(
-                    f"{API_BASE}/register",
-                    json={"username": reg_user, "password": reg_pass},
-                )
-                if resp.status_code == 201:
-                    st.success("Account created! You can now log in.")
-                else:
-                    st.error(resp.json().get("detail", "Registration failed"))
-
-
-# ── Sidebar: Conversation list ─────────────────────────────────────
-
-if _logged_in():
-    with st.sidebar:
-        st.divider()
-        st.header("Conversations")
-
-        if st.button("New Conversation"):
-            st.session_state.pop("conversation_id", None)
-            st.session_state["history"] = []
-            st.rerun()
-
-        # Fetch conversation list
-        try:
-            resp = requests.get(f"{API_BASE}/conversations", auth=_auth())
-            if resp.status_code == 200:
-                conversations = resp.json()
+                conversation_id = conv.id
             else:
-                conversations = []
-        except Exception:
-            conversations = []
+                conv = await crud.get_conversation(session, body.conversation_id)
+                if conv is None or conv.user_id != user.id:
+                    raise HTTPException(status_code=404, detail="Conversation not found")
+                conversation_id = conv.id
 
-        for conv in conversations:
-            label = conv["title"][:40]
-            if st.button(label, key=conv["id"]):
-                # Load this conversation
-                detail_resp = requests.get(
-                    f"{API_BASE}/conversations/{conv['id']}", auth=_auth()
-                )
-                if detail_resp.status_code == 200:
-                    detail = detail_resp.json()
-                    st.session_state["conversation_id"] = conv["id"]
-                    st.session_state["history"] = [
-                        {"role": m["role"], "content": m["content"]}
-                        for m in detail["messages"]
-                    ]
-                    st.rerun()
+            # Save user message
+            await crud.add_message(session, conversation_id, "user", body.question)
+
+            # Fetch last 10 messages for history context
+            history_msgs = await crud.get_history(session, conversation_id, limit=10)
+            history = [{"role": m.role, "content": m.content} for m in history_msgs]
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+    try:
+        # Run RAG with history (FAISS retrieval on current question only)
+        # Use to_thread since the RAG pipeline is synchronous/blocking
+        answer = await asyncio.wait_for(
+            asyncio.to_thread(
+                rag.faiss_chain_product_based_with_history,
+                question=body.question, history=history, initial_k=10, final_k=3,
+            ),
+            timeout=120,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="RAG query timed out after 120s")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"RAG pipeline error: {e}")
+
+    # Save assistant message
+    async with async_session() as session:
+        await crud.add_message(session, conversation_id, "assistant", answer)
+
+    return AskResponse(answer=answer, conversation_id=conversation_id)
 
 
-# ── Main chat area ─────────────────────────────────────────────────
+# ── Conversation endpoints ─────────────────────────────────────────
 
-st.title("Henkel RAG Chatbot")
-st.markdown("Ask anything about Henkel adhesive products!")
+@app.get("/conversations", response_model=list[ConversationSummary])
+async def list_conversations(user: User = Depends(get_current_user)):
+    async with async_session() as session:
+        convs = await crud.get_conversations_for_user(session, user.id)
+        return convs
 
-col1, col2 = st.columns(2)
-with col1:
-    model_name = st.selectbox("Embedding Model", AVAILABLE_MODELS)
-with col2:
-    llm_model = st.selectbox("LLM Model", AVAILABLE_LLM_MODELS)
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetail)
+async def get_conversation(
+    conversation_id: uuid.UUID, user: User = Depends(get_current_user)
+):
+    async with async_session() as session:
+        conv = await crud.get_conversation(session, conversation_id)
+        if conv is None or conv.user_id != user.id:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return conv
 
-# Render chat history
-for msg in st.session_state.history:
-    role = msg["role"] if "role" in msg else ("user" if "user" in msg else "assistant")
-    content = msg.get("content") or msg.get("user") or msg.get("bot", "")
-    st.chat_message(role).write(content)
 
-user_input = st.chat_input("Say something")
+# ── Model listing ──────────────────────────────────────────────────
 
-if user_input:
-    # Show user message immediately
-    st.chat_message("user").write(user_input)
+@app.get("/llm-models")
+async def list_llm_models():
+    return {"models": LLM_MODELS}
 
-    if not _logged_in():
-        # Fallback: unauthenticated mode (no persistence)
-        with st.spinner("Thinking..."):
-            st.warning("Log in to save conversations.")
-            # Can't call POST /ask without auth, so show a message
-            st.session_state.history.append({"role": "user", "content": user_input})
-            st.session_state.history.append(
-                {"role": "assistant", "content": "Please log in to use the chatbot."}
-            )
-            st.rerun()
-    else:
-        with st.spinner("Thinking..."):
-            payload = {
-                "question": user_input,
-                "model_name": model_name,
-                "llm_model": llm_model,
-                "conversation_id": st.session_state.get("conversation_id"),
-            }
 
-            try:
-                resp = requests.post(
-                    f"{API_BASE}/ask", json=payload, auth=_auth(), timeout=130
-                )
-                if resp.status_code != 200:
-                    # Show the real server error
-                    try:
-                        detail = resp.json().get("detail", resp.text)
-                    except Exception:
-                        detail = resp.text or f"HTTP {resp.status_code}"
-                    answer = f"API error ({resp.status_code}): {detail}"
-                else:
-                    data = resp.json()
-                    answer = data.get("answer", "No answer received.")
-                    st.session_state["conversation_id"] = data.get("conversation_id")
-            except requests.ConnectionError:
-                answer = "Cannot connect to API. Is the FastAPI server running on port 8000?"
-            except requests.Timeout:
-                answer = "Request timed out. The server took too long to respond."
-            except Exception as e:
-                answer = f"Error contacting API: {e}"
+# ── Health check ───────────────────────────────────────────────────
 
-        st.session_state.history.append({"role": "user", "content": user_input})
-        st.session_state.history.append({"role": "assistant", "content": answer})
-        st.rerun()
+@app.get("/health")
+async def health_check():
+    from sqlalchemy import text
+    try:
+        async with async_session() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Database unreachable")
+    return {"status": "ok"}

@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Bot, Settings, ChevronDown } from 'lucide-react';
+import { Send, ArrowLeft, Bot, Settings, ChevronDown, ExternalLink } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { DebugPanel } from './DebugPanel';
 import { ApiService } from '../services/api';
-import { getApiUrl } from '../config/api';
 
 interface RagMessage {
   id: string;
@@ -13,6 +12,7 @@ interface RagMessage {
   content: string;
   sources?: string[];
   isLoading?: boolean;
+  trace_url?: string;
 }
 
 const RagQA: React.FC = () => {
@@ -76,34 +76,27 @@ const RagQA: React.FC = () => {
       await new Promise(r => setTimeout(r, 100));
       setLoadingStep('Generating answer…');
 
-      const response = await fetch(getApiUrl('/rag/query'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text.trim(), history, llm_model: selectedModel }),
-      });
+      const data = await ApiService.executeAgentQuery(text.trim(), undefined, selectedModel, history);
 
-      if (response.ok) {
-        const data = await response.json();
-        const assistantMsg: RagMessage = {
-          id: (Date.now() + 1).toString(),
-          type: 'assistant',
-          content: data.answer,
-          sources: data.sources,
-        };
-        setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
-      } else {
-        setMessages(prev => [
-          ...prev.slice(0, -1),
-          { id: (Date.now() + 1).toString(), type: 'assistant', content: 'Something went wrong. Please try again.' },
-        ]);
-      }
+      const sources = data.rag_chunks
+        ? Array.from(new Set(data.rag_chunks.map((c: any) => c.source).filter(Boolean)))
+        : undefined;
+
+      const assistantMsg: RagMessage = {
+        id: (Date.now() + 1).toString(),
+        type: 'assistant',
+        content: data.final_answer || data.error || 'No answer generated.',
+        sources: sources as string[] | undefined,
+        trace_url: data.trace_url,
+      };
+      setMessages(prev => [...prev.slice(0, -1), assistantMsg]);
     } catch {
       setMessages(prev => [
         ...prev.slice(0, -1),
         {
           id: (Date.now() + 1).toString(),
           type: 'assistant',
-          content: 'Could not reach the RAG endpoint. Make sure the backend is running.',
+          content: 'Could not reach the backend. Make sure the server is running.',
         },
       ]);
     } finally {
@@ -230,6 +223,21 @@ const RagQA: React.FC = () => {
                           </span>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {/* LangSmith trace link */}
+                  {message.trace_url && (
+                    <div className="px-1 mt-1">
+                      <a
+                        href={message.trace_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        View trace in LangSmith
+                      </a>
                     </div>
                   )}
                 </div>
