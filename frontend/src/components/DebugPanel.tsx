@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ApiService } from '../services/api';
-import { RefreshCw, AlertCircle, Clock, BarChart2, CheckCircle, XCircle, Database, Cpu, BookOpen } from 'lucide-react';
+import { RefreshCw, AlertCircle, Clock, CheckCircle, XCircle, Database, Cpu, BookOpen } from 'lucide-react';
 
 interface DebugPanelProps {
   onClose: () => void;
@@ -49,46 +49,29 @@ function EmptyTab() {
 
 // ── Eval sections ──────────────────────────────────────────────────────────
 
-function LlmSection({ data }: { data: any }) {
-  if (!data) return <EmptyTab />;
+function LlmSection({ llmData, agentData }: { llmData: any; agentData: any }) {
   return (
     <div className="space-y-4">
-      <MetricTable title="RAG Answer Relevance" data={data.rag_relevance ?? {}} />
-      <MetricTable title="SQL Accuracy" data={data.sql_accuracy ?? {}} />
-      <MetricTable title="Avg Latency (ms)" data={data.avg_latency_ms ?? {}} isLatency />
-    </div>
-  );
-}
-
-function RagPerfSection({ data }: { data: any }) {
-  if (!data) return <EmptyTab />;
-  return (
-    <div className="space-y-4">
-      <MetricTable title="Answer Relevance by Variant" data={data.answer_relevance ?? {}} />
-      <MetricTable title="Avg Latency (ms)" data={data.avg_latency_ms ?? {}} isLatency />
-    </div>
-  );
-}
-
-function AgentSection({ data }: { data: any }) {
-  if (!data) return <EmptyTab />;
-  const acc = data.routing_accuracy ?? {};
-  const overall = acc.overall;
-  return (
-    <div className="space-y-4">
-      {overall !== undefined && (
-        <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-          <BarChart2 size={18} className="text-blue-500 shrink-0" />
-          <div className="flex-1">
-            <p className="text-xs text-gray-500 mb-1">Overall Routing Accuracy</p>
-            <ScoreBar value={overall} />
-          </div>
+      {llmData && <>
+        <MetricTable title="Routing Accuracy by Category" 
+          data={Object.fromEntries(
+            Object.entries(agentData.routing_accuracy ?? {}).filter(([k]) => k !== 'overall') as [string, number][]
+          )} />
+        <MetricTable title="RAG Answer Relevance" data={llmData.rag_relevance ?? {}} />
+        <MetricTable title="SQL Accuracy" data={llmData.sql_accuracy ?? {}} />
+        <MetricTable title="Avg Latency (ms)" data={llmData.avg_latency_ms ?? {}} isLatency />
+      </>}
+      {/* {agentData && (
+        <div className={llmData ? 'pt-4 border-t' : ''}>
+          <MetricTable
+            title="Routing Accuracy by Category"
+            data={Object.fromEntries(
+              Object.entries(agentData.routing_accuracy ?? {}).filter(([k]) => k !== 'overall') as [string, number][]
+            )}
+          />
         </div>
-      )}
-      <MetricTable
-        title="Accuracy by Route"
-        data={Object.fromEntries(Object.entries(acc).filter(([k]) => k !== 'overall') as [string, number][])}
-      />
+      )} */}
+      {!llmData && !agentData && <EmptyTab />}
     </div>
   );
 }
@@ -193,6 +176,32 @@ function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: bool
           <span className="ml-1">({kb.latest_file.updated})</span>
         </div>
       )}
+      {/* Inverted index stats */}
+      {kb.inverted_index && (
+        <div className="ml-7 mb-3 mt-1 space-y-0.5">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">Data Index</p>
+          <div className="text-xs text-gray-500 space-y-0.5">
+            <div className="flex justify-between">
+              <span>Schema tokens</span>
+              <span className="font-mono text-gray-700">{(kb.inverted_index.schema_tokens ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Value tokens</span>
+              <span className="font-mono text-gray-700">{(kb.inverted_index.value_tokens ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>History questions</span>
+              <span className="font-mono text-gray-700">{(kb.inverted_index.history_entries ?? 0).toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Status</span>
+              <span className={`font-medium ${kb.inverted_index.ready ? 'text-green-600' : 'text-amber-500'}`}>
+                {kb.inverted_index.ready ? 'Ready' : 'Building…'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LLMs */}
       <div className="py-3 border-b">
@@ -230,7 +239,7 @@ function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: bool
 
 // ── Main panel ─────────────────────────────────────────────────────────────
 
-type Tab = 'diag' | 'llms' | 'rag' | 'agent';
+type Tab = 'diag' | 'llms';
 
 export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
   const [evalResults, setEvalResults] = useState<any>(null);
@@ -261,18 +270,15 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
   useEffect(() => { loadEval(); }, []);
 
   const tabs: { id: Tab; label: string }[] = [
+    { id: 'llms',  label: 'Agent Performance' },
     { id: 'diag',  label: 'Diagnostics' },
-    { id: 'llms',  label: 'LLM Comparison' },
-    { id: 'rag',   label: 'RAG Pipeline' },
-    { id: 'agent', label: 'Routing' },
   ];
 
-  const isEvalTab = activeTab !== 'diag';
-  const evalMeta = isEvalTab && evalResults && !evalResults.error;
+  const evalMeta = activeTab === 'llms' && evalResults && !evalResults.error;
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl w-[540px] max-h-[82vh] flex flex-col overflow-hidden">
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 overflow-hidden">
+      <div className="bg-white rounded-xl shadow-xl flex flex-col w-[520px] max-h-[80vh] overflow-hidden">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b">
@@ -290,7 +296,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
           </div>
         </div>
 
-        {/* Eval meta row */}
+        {/* Eval meta row — only for Agent Performance tab */}
         {evalMeta && (
           <div className="flex items-center gap-3 px-5 py-2 bg-gray-50 border-b text-xs text-gray-500">
             <Clock size={12} />
@@ -301,7 +307,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
         )}
 
         {/* Tabs */}
-        <div className="flex border-b px-5 overflow-x-auto">
+        <div className="flex border-b px-5">
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -327,30 +333,13 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
               ? <div className="flex items-center justify-center py-16 text-gray-400"><RefreshCw size={20} className="animate-spin mr-2" /><span className="text-sm">Loading…</span></div>
               : evalResults?.error
               ? <EvalError />
-              : <LlmSection data={evalResults?.eval_llms} />
+              : <div className="pr-1">
+                  <LlmSection llmData={evalResults?.eval_llms} agentData={evalResults?.eval_agentic} />
+                </div>
           )}
-          {activeTab === 'rag' && (
-            evalLoading
-              ? <div className="flex items-center justify-center py-16 text-gray-400"><RefreshCw size={20} className="animate-spin mr-2" /><span className="text-sm">Loading…</span></div>
-              : evalResults?.error
-              ? <EvalError />
-              : <RagPerfSection data={evalResults?.eval_rag_perf} />
-          )}
-          {activeTab === 'agent' && (
-            evalLoading
-              ? <div className="flex items-center justify-center py-16 text-gray-400"><RefreshCw size={20} className="animate-spin mr-2" /><span className="text-sm">Loading…</span></div>
-              : evalResults?.error
-              ? <EvalError />
-              : <AgentSection data={evalResults?.eval_agentic} />
-          )}
+
         </div>
 
-        {/* Footer */}
-        {isEvalTab && !evalLoading && !evalResults?.error && (
-          <div className="px-5 py-3 border-t bg-gray-50 text-xs text-gray-400 text-center">
-            Re-run: <span className="font-mono">python -m scripts.run_eval --model gpt-4o</span>
-          </div>
-        )}
       </div>
     </div>
   );

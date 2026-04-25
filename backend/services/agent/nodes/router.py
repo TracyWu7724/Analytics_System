@@ -24,6 +24,26 @@ except Exception:
 
 from ..state import AgentState
 
+# ── Schema-introspection fast path ──────────────────────────────────────────
+# Detected before the LLM call to avoid wasted tokens and wrong routing.
+
+import re as _re
+
+_SCHEMA_PATTERNS = [
+    r'\b(list|show|give|what|tell).{0,30}\b(table|tables|schema|dataset|datasets)\b',
+    r'\b(available|existing|all)\b.{0,20}\b(table|tables|data)\b',
+    r'\bwhat (data|tables?|datasets?).{0,20}\b(available|exist|have|do you have)\b',
+    r'\bdata(base)? schema\b',
+    r'\bdatabricks.{0,20}\btable\b',
+    r'\bshow.{0,20}(all|every).{0,20}table\b',
+    r'\blist.{0,20}(data|table)\b',
+]
+_SCHEMA_RE = _re.compile('|'.join(_SCHEMA_PATTERNS), _re.IGNORECASE)
+
+
+def _is_schema_question(question: str) -> bool:
+    return bool(_SCHEMA_RE.search(question))
+
 
 _ROUTER_PROMPT = """\
 You are a routing agent for a Decision Support System.
@@ -91,6 +111,10 @@ def router_node(state: AgentState) -> dict:
     """
     question = state["question"]
     user_model = state.get("llm_model", "gemini-2.5-flash")
+
+    # Fast path: schema introspection questions bypass the LLM router entirely
+    if _is_schema_question(question):
+        return {"route": "schema", "route_reasoning": "Question asks for table/schema listing"}
 
     try:
         llm = get_llm(user_model)

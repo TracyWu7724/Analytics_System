@@ -53,6 +53,7 @@ from langgraph.graph import END, StateGraph
 
 from .nodes.rag_node import rag_node, should_continue_after_rag
 from .nodes.router import router_node
+from .nodes.schema_node import schema_node
 from .nodes.sql_node import should_retry_sql, sql_node
 from .nodes.synthesizer import synthesizer_node
 from .state import AgentState
@@ -71,6 +72,10 @@ def _set_final_answer_from_sql(state: AgentState) -> dict:
         return {"final_answer": f"SQL query failed after retries: {error}", "error": error}
 
     if not rows:
+        # May have a pre-set explanation from empty-result diagnosis
+        pre_set = state.get("final_answer")
+        if pre_set:
+            return {"final_answer": pre_set, "error": None}
         return {"final_answer": "The query ran successfully but returned no results.", "error": None}
 
     # Build a readable summary (first 20 rows)
@@ -105,6 +110,7 @@ def build_agent(
     reranker_model_name: Optional[str] = None,
     initial_k: int = 10,
     final_k: int = 5,
+    value_index=None,
 ):
     """
     Compile and return the LangGraph agent.
@@ -113,7 +119,8 @@ def build_agent(
     remains a pure function of AgentState.
     """
     # Bind runtime dependencies into node functions
-    _sql = functools.partial(sql_node, data_service=data_service)
+    _schema = functools.partial(schema_node, data_service=data_service)
+    _sql = functools.partial(sql_node, data_service=data_service, value_index=value_index)
     _rag = functools.partial(
         rag_node,
         metadata_path=metadata_path,
@@ -128,6 +135,7 @@ def build_agent(
     graph = StateGraph(AgentState)
 
     graph.add_node("router", router_node)
+    graph.add_node("schema_node", _schema)
     graph.add_node("sql_node", _sql)
     graph.add_node("rag_node", _rag)
     graph.add_node("synthesizer", synthesizer_node)
@@ -142,11 +150,14 @@ def build_agent(
         "router",
         lambda s: s.get("route", "sql"),
         {
-            "sql": "sql_node",
-            "rag": "rag_node",
-            "both": "sql_node",
+            "sql":    "sql_node",
+            "rag":    "rag_node",
+            "both":   "sql_node",
+            "schema": "schema_node",
         },
     )
+
+    graph.add_edge("schema_node", END)
 
     # SQL node → retry | rag | synthesizer | end_sql
     graph.add_conditional_edges(

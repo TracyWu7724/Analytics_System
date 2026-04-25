@@ -18,6 +18,10 @@ class AgentState(TypedDict):
     uploaded_table: Optional[str]  # if user has an uploaded CSV in context
     llm_model: str               # which LLM to use for generation
 
+    # ── Identity ─────────────────────────────────────────────────────────────
+    session_id: Optional[str]     # UUID per chat session (for tracing)
+    user_id: Optional[str]        # username (for tracing)
+
     # ── Auth / data-access ───────────────────────────────────────────────────
     denied_tables: Optional[list[str]]       # table name substrings the user cannot query
     denied_rag_sources: Optional[list[str]]  # RAG source substrings the user cannot see

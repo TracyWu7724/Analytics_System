@@ -50,20 +50,18 @@ def generate_sql(
     custom_limit: int | None = None,
     llm_model: str = DEFAULT_LLM_MODEL,
 ) -> str:
-    is_uploaded_table = table_name.startswith("uploaded_")
     columns_info = ""
     if columns_list:
         columns_info = f"\nAvailable columns: {', '.join(columns_list)}\nIMPORTANT: Only use these exact column names!"
 
     if custom_limit is None:
-        limit_instruction = "DO NOT add any LIMIT clause - user wants all data"
+        limit_instruction = "DO NOT add any LIMIT clause — user wants all data"
     elif custom_limit > 1000:
         limit_instruction = f"Add LIMIT {custom_limit} to get the requested {custom_limit:,} rows"
     else:
         limit_instruction = f"Add LIMIT {custom_limit} for safety"
 
-    if is_uploaded_table:
-        prompt = f"""You are a SQL expert. Generate a single SQLite SQL query that precisely answers this question:
+    prompt = f"""You are a Databricks SQL expert. Generate a single Databricks SQL query that precisely answers this question:
 
 Question: {question}
 
@@ -71,29 +69,19 @@ Table: {table_name}{columns_info}
 
 Rules:
 - Return ONLY the raw SQL query — no explanation, no markdown, no code fences
-- Use SQLite syntax (use LIMIT, not TOP)
+- Use Databricks SQL syntax (Apache Spark SQL)
+- Use the exact fully-qualified table name as given: {table_name}
+- Do NOT wrap any part of the table name in brackets or quotes
+- Use backticks only if a column name contains spaces or special characters
+- {limit_instruction}
+- Only reference columns listed above
 - FILTERING: Always add a WHERE clause when the question mentions a specific name, value, category, or condition
-- AGGREGATION: Use SUM(), COUNT(), AVG(), MIN(), MAX() with GROUP BY when the question asks for statistics, totals, summaries, or comparisons
-- Do NOT return SELECT * when an aggregated or filtered result is clearly needed
-- Only reference columns listed above{f' — add LIMIT {custom_limit} when returning individual rows (omit for single-row aggregates)' if custom_limit else ''}
+- AGGREGATION: Use SUM(), COUNT(), AVG(), MIN(), MAX() with GROUP BY when the question asks for statistics, totals, or comparisons
+- DERIVED METRICS: If the question asks for profit, margin, growth, net revenue, or any metric that has no direct column, compute it from the available columns (e.g. profit = revenue - cost, margin = profit / revenue * 100). Never return SELECT * when a calculation is clearly needed
+- Do NOT use TOP — use LIMIT instead
+- Do NOT use square brackets [ ] — this is not SQL Server
 
 SQL query:"""
-    else:
-        prompt = f"""
-Generate SQL Server SQL for this question: {question}
-
-Table: {table_name}{columns_info}
-Rules:
-- Use SQL Server T-SQL syntax
-- {limit_instruction}
-- Use fully qualified table names (schema.table)
-- Only use columns that exist in the table
-- Prefer summary queries (COUNT, SUM) over SELECT * when appropriate
-- For simple row limiting use TOP
-- For pagination use ORDER BY ... OFFSET ... FETCH NEXT
-- NEVER use TOP and OFFSET in the same query
-
-Return only SQL:"""
 
     response = get_llm(llm_model).invoke(prompt)
 

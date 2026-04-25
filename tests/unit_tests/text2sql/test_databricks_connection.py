@@ -15,7 +15,8 @@ from services.text2sql.db.databricks_service import DatabricksService
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_svc(hostname="host", client_id="id", secret="sec", http_path="/sql"):
+def _make_svc(hostname="host", client_id="id", secret="sec", http_path="/sql",
+              db_schema="chatbot_mw"):
     """Build a DatabricksService with controlled env and a temp local DB."""
     tmpfile = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmpfile.close()
@@ -24,6 +25,7 @@ def _make_svc(hostname="host", client_id="id", secret="sec", http_path="/sql"):
     svc.client_id = client_id
     svc.client_secret = secret
     svc.http_path = http_path
+    svc.db_schema = db_schema
     svc.local_db_path = tmpfile.name
     svc.init_local_db()
     return svc, tmpfile.name
@@ -169,13 +171,13 @@ class TestGetTableNames:
         raw = [{"tableName": "sales"}, {"tableName": "orders"}]
         with patch.object(self.svc, "execute_query", return_value=raw):
             names = self.svc.get_table_names()
-        assert all("swks_das_dev.gold." in n for n in names)
+        assert all("chatbot_mw." in n for n in names)
 
     def test_preserves_already_qualified_names(self):
-        raw = [{"tableName": "swks_das_dev.gold.sales"}]
+        raw = [{"tableName": "chatbot_mw.sales"}]
         with patch.object(self.svc, "execute_query", return_value=raw):
             names = self.svc.get_table_names()
-        assert names == ["swks_das_dev.gold.sales"]
+        assert names == ["chatbot_mw.sales"]
 
     def test_handles_table_name_column_key(self):
         raw = [{"table_name": "employees"}]

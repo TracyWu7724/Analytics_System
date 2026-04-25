@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sqlite3
 import tempfile
 import threading
 from typing import Optional
@@ -58,16 +57,16 @@ def _share_run(run_id: Optional[str]) -> Optional[str]:
 # ── Service imports ──────────────────────────────────────────────────────────
 try:
     from ..text2sql.db.databricks_service import DatabricksService
-    from ..text2sql.db.upload_service import UploadService
     from ..agent.graph import build_agent
     from ..agent.tools.rag_tool import run_rag
     from ..text2sql.generation.llm_registry import list_llm_models
+    from ..text2sql.indexing.inverted_index import init_inverted_index
 except ImportError:
     from db.databricks_service import DatabricksService
-    from db.upload_service import UploadService
     from agent.graph import build_agent
     from agent.tools.rag_tool import run_rag
     from generation.llm_registry import list_llm_models
+    from indexing.inverted_index import init_inverted_index
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -104,8 +103,28 @@ def _resolve_rag_paths(embed_dir: str, model_name: str) -> tuple[str, str]:
 
 # ── Singletons ───────────────────────────────────────────────────────────────
 _data_service = DatabricksService()
-_data_service.init_local_db()
-_upload_service = UploadService(_data_service)
+
+# Warm schema cache in background so column-based table scoring works from first query
+def _warm_schema_cache():
+    import threading
+    def _warm():
+        try:
+            tables = _data_service.get_table_names()
+            for t in tables:
+                _data_service.get_table_schema(t)
+        except Exception:
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
+
+_warm_schema_cache()
+
+# Inverted index — loaded from disk or built in background thread.
+# sql_node falls back gracefully until ready (is_ready() returns False while building).
+_value_index = init_inverted_index(
+    _data_service,
+    index_dir=os.getenv("INDEX_DIR", ""),
+    embed_model_name=os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+)
 
 _EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 _RERANKER_MODEL = os.getenv("RAG_RERANKER_MODEL", None)
@@ -133,20 +152,31 @@ _agent = build_agent(
     faiss_path=_RAG_FAISS_PATH,
     embed_model_name=_EMBED_MODEL,
     reranker_model_name=_RERANKER_MODEL,
+    value_index=_value_index,
 )
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
 class AgentQueryRequest(BaseModel):
     question: str
-    llm_model: str = "gemini-2.5-flash"
-    uploaded_table: Optional[str] = None
+    llm_model: str = "gpt-5.4"
     history: list[dict] = []
+    session_id: Optional[str] = None
+
+
+class FeedbackRequest(BaseModel):
+    message_id: str
+    question: str
+    sql: Optional[str] = None
+    final_answer: Optional[str] = None
+    rating: str          # "good" | "bad"
+    comment: str = ""
+    session_id: str = ""
 
 
 class RagQueryRequest(BaseModel):
     question: str
-    llm_model: str = "gemini-2.5-flash"
+    llm_model: str = "gpt-5.4"
     history: list[dict] = []
 
 
@@ -245,8 +275,10 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
     initial_state: dict = {
         "question": request.question,
         "history": request.history,
-        "uploaded_table": request.uploaded_table,
         "llm_model": request.llm_model,
+        "session_id": request.session_id or "",
+        "user_id": "",
+        "uploaded_table": None,
         "route": None,
         "route_reasoning": None,
         "sql_table": None,
@@ -266,11 +298,11 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
     # Apply data-level access restrictions if the user is authenticated
     try:
         from auth.permission_auth import auth_service
-        from fastapi import Request
         if authorization:
             token = authorization.replace("Bearer ", "").strip()
             user = auth_service.verify_token(token)
             if user:
+                initial_state["user_id"] = user.username
                 initial_state = user.adjust_agent_state(initial_state)
     except Exception:
         pass  # auth module unavailable — serve without restrictions
@@ -285,6 +317,7 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent error: {e}")
 
+    sql_table = result.get("sql_table")
     return AgentQueryResponse(
         question=request.question,
         route=result.get("route"),
@@ -292,7 +325,7 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
         final_answer=result.get("final_answer"),
         sql_query=result.get("sql_query"),
         sql_rows=result.get("sql_rows"),
-        sql_table=result.get("sql_table"),
+        sql_table=sql_table,
         sql_attempts=result.get("sql_attempts", 0),
         rag_chunks=result.get("rag_chunks"),
         error=result.get("error"),
@@ -334,79 +367,10 @@ async def rag_query(request: RagQueryRequest):
     )
 
 
-# ── File upload ───────────────────────────────────────────────────────────────
-
-@app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided")
-    if not any(file.filename.lower().endswith(ext) for ext in [".csv", ".xlsx", ".xls"]):
-        raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
-        try:
-            tmp.write(await file.read())
-            tmp.flush()
-            result = _upload_service.process_uploaded_file(tmp.name, file.filename)
-            if not result["success"]:
-                raise HTTPException(status_code=400, detail=f"File processing failed: {result['error']}")
-
-            preview_data = _data_service.query_uploaded_table(
-                f"SELECT * FROM {result['table_name']} LIMIT 10"
-            )
-            return {
-                "success": True,
-                "message": "File uploaded successfully",
-                "table_name": result["table_name"],
-                "row_count": result["row_count"],
-                "column_count": result["column_count"],
-                "columns": result["columns"],
-                "preview_data": preview_data,
-                "preview_count": len(preview_data),
-                "original_filename": result.get("original_filename"),
-                "file_extension": result.get("file_extension"),
-            }
-        finally:
-            try:
-                os.unlink(tmp.name)
-            except OSError:
-                pass
-
-
 @app.get("/table/{table_name}/preview")
 async def get_table_preview(table_name: str, limit: int = 5):
     try:
-        if table_name.startswith("uploaded_"):
-            conn = sqlite3.connect(_data_service.local_db_path)
-            conn.row_factory = sqlite3.Row
-            try:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
-                )
-                if not cursor.fetchone():
-                    raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
-                cursor.execute(f"PRAGMA table_info({table_name})")
-                columns = [col["name"] for col in cursor.fetchall()]
-                cursor.execute(f"SELECT * FROM {table_name} LIMIT ?", (limit,))
-                rows = [dict(row) for row in cursor.fetchall()]
-                cursor.execute(f"SELECT COUNT(*) as count FROM {table_name}")
-                total_rows = cursor.fetchone()["count"]
-            finally:
-                conn.close()
-
-            return {
-                "table_name": table_name,
-                "columns": columns,
-                "rows": rows,
-                "preview_count": len(rows),
-                "total_rows": total_rows,
-                **_data_service.get_table_metadata(table_name),
-            }
-
         return _data_service.get_table_preview(table_name, limit)
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching table preview: {e}")
 
@@ -426,9 +390,8 @@ async def diagnostics():
         try:
             required = [
                 _data_service.server_hostname,
-                _data_service.client_id,
-                _data_service.client_secret,
                 _data_service.http_path,
+                _data_service.token,
             ]
             if not all(required):
                 return {"status": "misconfigured", "message": "One or more DATABRICKS_* env vars not set", "latency_ms": 0}
@@ -513,6 +476,18 @@ async def diagnostics():
             })
         else:
             info["status"] = "not_configured"
+
+        # Inverted index stats (schema + value + history)
+        try:
+            from ..text2sql.indexing.inverted_index import get_inverted_index
+            idx = get_inverted_index()
+            if idx is not None:
+                info["inverted_index"] = idx.stats()
+            else:
+                info["inverted_index"] = None
+        except Exception:
+            info["inverted_index"] = None
+
         return info
 
     result["knowledge_base"] = await asyncio.to_thread(_check_rag)
@@ -544,6 +519,43 @@ async def get_eval_results():
 
     with open(files[0]) as f:
         return json.load(f)
+
+
+# ── Feedback ─────────────────────────────────────────────────────────────────
+
+@app.post("/feedback")
+async def submit_feedback(
+    request: FeedbackRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Store thumbs-up/down feedback for a message."""
+    try:
+        from ..text2sql.generation.sql_hallucination_guard import store_feedback
+    except ImportError:
+        from text2sql.generation.sql_hallucination_guard import store_feedback
+
+    user_id = ""
+    try:
+        from auth.permission_auth import auth_service
+        if authorization:
+            token = authorization.replace("Bearer ", "").strip()
+            user = auth_service.verify_token(token)
+            if user:
+                user_id = user.username
+    except Exception:
+        pass
+
+    store_feedback(
+        message_id=request.message_id,
+        question=request.question,
+        sql=request.sql,
+        final_answer=request.final_answer,
+        rating=request.rating,
+        comment=request.comment,
+        session_id=request.session_id,
+        user_id=user_id,
+    )
+    return {"success": True}
 
 
 # ── PDF → knowledge base ──────────────────────────────────────────────────────

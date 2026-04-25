@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { getApiUrl } from '../config/api';
 
 const TOKEN_KEY = 'ds_auth_token';
@@ -43,10 +43,23 @@ function loadUser(): AuthUser | null {
   return token ? decodeToken(token) : null;
 }
 
+const AUTH_EVENT = 'authChanged';
+
 export function useAuth() {
   const [user, setUser] = useState<AuthUser | null>(loadUser);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Sync across all useAuth instances in the same tab when login/logout fires
+  useEffect(() => {
+    const sync = () => setUser(loadUser());
+    window.addEventListener(AUTH_EVENT, sync);
+    window.addEventListener('storage', sync); // cross-tab sync
+    return () => {
+      window.removeEventListener(AUTH_EVENT, sync);
+      window.removeEventListener('storage', sync);
+    };
+  }, []);
 
   const login = useCallback(async (username: string, password: string) => {
     setLoading(true);
@@ -64,6 +77,7 @@ export function useAuth() {
       localStorage.setItem(TOKEN_KEY, access_token);
       const decoded = decodeToken(access_token);
       setUser(decoded);
+      window.dispatchEvent(new Event(AUTH_EVENT));
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Login failed');
@@ -77,6 +91,7 @@ export function useAuth() {
     localStorage.removeItem(TOKEN_KEY);
     setUser(null);
     setError(null);
+    window.dispatchEvent(new Event(AUTH_EVENT));
   }, []);
 
   const getToken = useCallback(() => localStorage.getItem(TOKEN_KEY), []);

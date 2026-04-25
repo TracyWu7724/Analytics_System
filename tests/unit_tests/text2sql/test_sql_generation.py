@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from services.text2sql.generation.sql_generation import (
+from backend.services.text2sql.generation.sql_generation import (
     detect_large_dataset_request,
     generate_sql,
 )

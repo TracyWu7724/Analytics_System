@@ -5,10 +5,18 @@ import AgentChat from "./components/AgentChat";
 
 const AgentChatWrapper: React.FC = () => {
   const [searchParams] = useSearchParams();
-  const initialQuery = searchParams.get('query') || '';
-  const uploadedTable = searchParams.get('uploaded_table') || undefined;
-  const llmModel = searchParams.get('llm_model') || undefined;
-  return <AgentChat initialQuery={initialQuery} uploadedTable={uploadedTable} initialLlmModel={llmModel} />;
+  const initialQuery = searchParams.get('query')    || '';
+  const llmModel     = searchParams.get('llm_model') || undefined;
+  const sessionParam = searchParams.get('session')   || undefined;
+
+  return (
+    <AgentChat
+      key={sessionParam ?? 'new'}
+      initialQuery={initialQuery}
+      initialLlmModel={llmModel}
+      sessionIdProp={sessionParam}
+    />
+  );
 };
 
 const App: React.FC = () => {
@@ -16,7 +24,7 @@ const App: React.FC = () => {
     <Router>
       <div className="App">
         <Routes>
-          <Route path="/" element={<Home />} />
+          <Route path="/"      element={<Home />} />
           <Route path="/agent" element={<AgentChatWrapper />} />
         </Routes>
       </div>

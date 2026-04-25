@@ -2,6 +2,7 @@
 data/
 dataset/
 eval_results/
+index/
 
 # Python
 .venv

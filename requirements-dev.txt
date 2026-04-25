@@ -33,6 +33,9 @@ faiss-cpu>=1.8.0
 unstructured[pdf]>=0.15
 fuzzywuzzy>=0.18
 python-Levenshtein>=0.25
+rapidfuzz>=3.0
+rank-bm25>=0.2.2
+spacy>=3.7
 
 torch>=2.4
 tqdm>=4.66

@@ -115,6 +115,12 @@ data_service.init_local_db()
 ensure_sql_column(data_service.local_db_path)
 upload_service = UploadService(data_service)
 
+try:
+    from ..text2sql.indexing.inverted_index import init_inverted_index as _init_idx
+    _init_idx(data_service)   # loads from backend/index/ or rebuilds in background
+except Exception:
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Traced SQL generation (no-op wrapper when LangSmith is disabled)
@@ -311,7 +317,10 @@ async def execute_natural_language_query(request: QueryRequest, background_tasks
             result_rows = data_service.execute_query(sql_query, timeout_seconds=min(suggested_timeout, 300), custom_limit=custom_limit)
 
         last_query_results = result_rows
-        background_tasks.add_task(index_question_background, request.question, data_service, sql_query)
+        _index_table = table_name if not table_name.startswith("uploaded_") else ""
+        background_tasks.add_task(
+            index_question_background, request.question, data_service, sql_query, _index_table
+        )
 
         response = {
             "question": request.question,

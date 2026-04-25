@@ -71,7 +71,7 @@ export class ApiService {
       const response = await fetchWithTimeout(getApiUrl('/upload'), {
         method: 'POST',
         body: formData,
-      }, API_CONFIG.QUICK_TIMEOUT); // Use shorter timeout for uploads
+      }, 120000); // 2 min — CSV/Excel parsing can be slow for large files
 
       console.log(`[API] Upload completed in ${Date.now() - startTime}ms`);
 
@@ -247,6 +247,7 @@ export class ApiService {
     uploadedTable?: string,
     llmModel?: string,
     history: { role: string; content: string }[] = [],
+    sessionId?: string,
   ): Promise<{
     route?: string;
     route_reasoning?: string;
@@ -262,6 +263,7 @@ export class ApiService {
       const body: any = { question, history };
       if (uploadedTable) body.uploaded_table = uploadedTable;
       if (llmModel) body.llm_model = llmModel;
+      if (sessionId) body.session_id = sessionId;
 
       const token = localStorage.getItem('ds_auth_token');
       const response = await fetchWithTimeout(getApiUrl('/agent/query'), {
@@ -375,7 +377,7 @@ export class ApiService {
       return await response.json();
     } catch (error) {
       console.error('[API] Failed to fetch LLM models:', error);
-      return { models: [], default: 'gemini-2.5-flash' };
+      return { models: [], default: 'gpt-5.4' };
     }
   }
 
@@ -386,6 +388,38 @@ export class ApiService {
       return await response.json();
     } catch (error) {
       return { error: error instanceof Error ? error.message : 'Failed to run diagnostics' };
+    }
+  }
+
+  static async submitFeedback(params: {
+    message_id: string;
+    question: string;
+    sql?: string;
+    final_answer?: string;
+    rating: 'good' | 'bad';
+    comment?: string;
+    session_id?: string;
+  }): Promise<void> {
+    try {
+      const token = localStorage.getItem('ds_auth_token');
+      await fetch(getApiUrl('/feedback'), {
+        method: 'POST',
+        headers: {
+          ...API_CONFIG.HEADERS,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          message_id: params.message_id,
+          question: params.question,
+          sql: params.sql ?? null,
+          final_answer: params.final_answer ?? null,
+          rating: params.rating,
+          comment: params.comment ?? '',
+          session_id: params.session_id ?? '',
+        }),
+      });
+    } catch {
+      // best-effort
     }
   }
 

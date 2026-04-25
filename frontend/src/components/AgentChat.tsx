@@ -1,22 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Bot, Settings, Upload, FileSpreadsheet, FileText, X, ChevronDown, ExternalLink, Zap, Database, BookOpen, Layers, LogIn } from 'lucide-react';
+import { Send, ArrowLeft, Settings, Upload, FileText, X, ChevronDown, ExternalLink, Zap, Database, BookOpen, LogIn, ThumbsUp, ThumbsDown } from 'lucide-react';
 import UserMenu from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
 import { QueryOutput } from './Result';
 import Sidebar from './Sidebar';
 import { DebugPanel } from './DebugPanel';
-import TablePreview from './TablePreview';
 import { ApiService } from '../services/api';
-import { queryHistoryService } from '../services/queryHistoryService';
+import { sessionHistoryService } from '../services/queryHistoryService';
 import type { ChatMessage } from '../types/chat';
-import type { QueryResult, TablePreview as TablePreviewType } from '../types/database';
+import type { QueryResult } from '../types/database';
 
 interface AgentChatProps {
   initialQuery?: string;
-  uploadedTable?: string;
   initialLlmModel?: string;
+  sessionIdProp?: string;   // if provided, restore this session from history
 }
 
 // ── Route badge ───────────────────────────────────────────────────────────────
@@ -37,22 +36,22 @@ const RouteBadge: React.FC<{ route: string; reasoning?: string }> = ({ route, re
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
-const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable, initialLlmModel }) => {
+const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmModel, sessionIdProp }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  // Stable session ID: restore from URL param, or generate a new one
+  const sessionId = useRef<string>(sessionIdProp ?? crypto.randomUUID());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
   const [showDebugPanel, setShowDebugPanel] = useState(false);
-  const [tablePreview, setTablePreview] = useState<TablePreviewType | null>(null);
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [uploadedTableName, setUploadedTableName] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [pendingFileUpload, setPendingFileUpload] = useState<boolean>(false);
   const [kbUpdateMessage, setKbUpdateMessage] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel || 'gemini-2.5-flash');
+  const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel || 'gpt-5.4');
   const [availableModels, setAvailableModels] = useState<{ id: string; display_name: string; provider: string; available: boolean }[]>([]);
+  const [feedbackSent, setFeedbackSent] = useState<Record<string, 'good' | 'bad'>>({});
+  const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -65,6 +64,57 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
     });
   }, []);
 
+  // Restore session from history when a sessionIdProp is given.
+  // If the last assistant message was an error, drop it and queue a retry.
+  useEffect(() => {
+    if (!sessionIdProp || !user) return;
+    const stored = sessionHistoryService.getSession(user.username, sessionIdProp);
+    if (!stored || stored.messages.length === 0) return;
+
+    const msgs = stored.messages;
+    const lastAssistant = [...msgs].reverse().find(m => m.type === 'assistant' && !m.isLoading);
+    const lastUser = [...msgs].reverse().find(m => m.type === 'user');
+
+    if (lastAssistant?.error && lastUser) {
+      // Restore everything except the errored assistant reply, then retry
+      setMessages(msgs.filter(m => m.id !== lastAssistant.id));
+      setRetryMessage(lastUser.content);
+    } else {
+      setMessages(msgs);
+    }
+  }, [sessionIdProp, user?.username]);
+
+  // Fire the retry after the restored messages are committed to state
+  useEffect(() => {
+    if (!retryMessage) return;
+    setRetryMessage(null);
+    handleSendMessage(retryMessage);
+  }, [retryMessage]);
+
+  // Save session to history after each complete exchange (no loading messages)
+  useEffect(() => {
+    if (!user) return;
+    const hasLoading = messages.some(m => m.isLoading);
+    if (hasLoading) return;
+    const userMsgs = messages.filter(m => m.type === 'user');
+    if (userMsgs.length === 0) return;
+
+    sessionHistoryService.upsertSession({
+      session_id: sessionId.current,
+      user_id: user.username,
+      title: userMsgs[0].content.slice(0, 60),
+      messages,
+      created_at: new Date(userMsgs[0].timestamp ?? Date.now()).toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    window.dispatchEvent(new Event('queryHistoryUpdated'));
+
+    // Stamp the session ID into the URL so a page refresh restores this conversation
+    if (!sessionIdProp) {
+      window.history.replaceState(null, '', `/agent?session=${encodeURIComponent(sessionId.current)}`);
+    }
+  }, [messages, user?.username]);
+
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   useEffect(() => {
@@ -75,26 +125,9 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
     }
   }, [initialQuery]);
 
-  useEffect(() => {
-    if (uploadedTable && !tablePreview) {
-      ApiService.getTablePreview(uploadedTable).then(preview => {
-        setTablePreview(preview);
-        setUploadedTableName(uploadedTable);
-        const fileName = preview?.original_filename ?? uploadedTable.replace('uploaded_', '') + '.csv';
-        const ext = preview?.file_extension ?? '.csv';
-        const mime = ext === '.xlsx' || ext === '.xls'
-          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-          : 'text/csv';
-        setUploadedFile(new File([''], fileName, { type: mime }));
-        if (messages.length === 0 && !initialQuery) {
-          setMessages([{ id: Date.now().toString(), type: 'user', content: `Using uploaded data: ${fileName}`, timestamp: new Date(), hasFileUpload: true }]);
-        }
-      }).catch(console.error);
-    }
-  }, [uploadedTable, messages.length, initialQuery]);
 
   // ── Agent query ─────────────────────────────────────────────────────────────
-  const executeAgentQuery = async (question: string, tableToUse?: string) => {
+  const executeAgentQuery = async (question: string) => {
     setLoadingStep('Routing your question...');
     await new Promise(r => setTimeout(r, 100));
 
@@ -103,7 +136,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
       .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }))
       .slice(-10);
 
-    const result = await ApiService.executeAgentQuery(question, tableToUse, selectedModel, history);
+    const result = await ApiService.executeAgentQuery(question, undefined, selectedModel, history, sessionId.current);
 
     setLoadingStep('');
     return result;
@@ -112,26 +145,14 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
   const handleSendMessage = async (messageContent: string = inputValue) => {
     if (!messageContent.trim()) return;
 
-    // Save to local query history and notify sidebar
-    try {
-      queryHistoryService.addQuery(messageContent.trim());
-      window.dispatchEvent(new Event('queryHistoryUpdated'));
-    } catch { /* ignore */ }
-
-    const hasUploadedData = !!(uploadedTableName || uploadedTable);
-    const isFileUploadQuery = hasUploadedData || pendingFileUpload;
-    const tableForQuery = isFileUploadQuery ? (uploadedTableName || uploadedTable) : undefined;
-
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       type: 'user',
       content: messageContent.trim(),
       timestamp: new Date(),
-      hasFileUpload: isFileUploadQuery,
     };
 
-    setMessages(prev => [...prev.map(m => ({ ...m, hasFileUpload: false })), userMessage]);
-    if (pendingFileUpload) setPendingFileUpload(false);
+    setMessages(prev => [...prev, userMessage]);
 
     const loadingMsg: ChatMessage = {
       id: (Date.now() + 1).toString(),
@@ -145,7 +166,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
     setIsLoading(true);
 
     try {
-      const data = await executeAgentQuery(messageContent, tableForQuery ?? undefined);
+      const data = await executeAgentQuery(messageContent);
 
       // Convert sql_rows to QueryResult format for the existing QueryOutput component
       let results: QueryResult[] | undefined;
@@ -205,58 +226,30 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
     if (ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'; }
   }, [inputValue]);
 
-  // ── File upload ──────────────────────────────────────────────────────────────
-  const getFileIcon = (name: string) => {
-    const ext = name.toLowerCase().split('.').pop();
-    return (ext === 'xlsx' || ext === 'xls')
-      ? <FileSpreadsheet className="w-5 h-5 text-green-600" />
-      : <FileText className="w-5 h-5 text-green-600" />;
-  };
-
+  // ── PDF upload (knowledge base) ───────────────────────────────────────────
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      alert('Only PDF files are supported for knowledge base updates.');
+      return;
+    }
     setIsUploading(true);
     setKbUpdateMessage(null);
-
-    const isPdf = file.name.toLowerCase().endsWith('.pdf');
-
     try {
-      if (isPdf) {
-        // PDF → knowledge base update
-        const result = await ApiService.uploadPdf(file);
-        if (result.success) {
-          setKbUpdateMessage(
-            `Knowledge base updated: "${result.filename}" — ${result.chunks_added} chunks added (${result.total_vectors} total vectors)`
-          );
-        } else {
-          alert(`PDF indexing failed: ${result.error}`);
-        }
+      const result = await ApiService.uploadPdf(file);
+      if (result.success) {
+        setKbUpdateMessage(
+          `Knowledge base updated: "${result.filename}" — ${result.chunks_added} chunks added (${result.total_vectors} total vectors)`
+        );
       } else {
-        // CSV / Excel → data table
-        const result = await ApiService.uploadFile(file);
-        if (result.success) {
-          setUploadedFile(file);
-          setUploadedTableName(result.table_name || null);
-          if (result.table_name) {
-            ApiService.getTablePreview(result.table_name).then(setTablePreview).catch(console.warn);
-          }
-          setPendingFileUpload(true);
-        } else {
-          alert(`Upload failed: ${result.error}`);
-        }
+        alert(`PDF indexing failed: ${result.error}`);
       }
     } catch { alert('Upload failed. Please try again.'); }
     finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
-  };
-
-  const removeUploadedFile = () => {
-    setUploadedFile(null); setUploadedTableName(null); setTablePreview(null); setPendingFileUpload(false);
-    setMessages(prev => prev.map(m => ({ ...m, hasFileUpload: false })));
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -359,17 +352,6 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
                     )}
                   </div>
 
-                  {/* Table preview for file-upload messages */}
-                  {message.type === 'user' && message.hasFileUpload && tablePreview && !message.isLoading && (
-                    <TablePreview
-                      tableName={tablePreview.table_name || tablePreview.name}
-                      columns={tablePreview.columns}
-                      rows={tablePreview.rows || []}
-                      totalRows={tablePreview.total_rows || 0}
-                      fileName={uploadedFile?.name || (uploadedTableName || uploadedTable)?.replace('uploaded_', '') + '.xlsx'}
-                    />
-                  )}
-
                   {/* SQL results table — only for SQL routes */}
                   {(message.results || (message.error && message.route !== 'rag')) && !message.isLoading && (
                     <div className="mt-4">
@@ -394,6 +376,56 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
                       </a>
                     </div>
                   )}
+
+                  {/* Feedback buttons — assistant messages only */}
+                  {message.type === 'assistant' && !message.isLoading && message.id && (
+                    <div className="mt-2 flex items-center gap-1.5 px-1">
+                      {feedbackSent[message.id] ? (
+                        <span className="text-xs text-gray-400">
+                          {feedbackSent[message.id] === 'good' ? 'Marked helpful' : 'Marked not helpful'} — thanks!
+                        </span>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => {
+                              const msgId = message.id!;
+                              setFeedbackSent(prev => ({ ...prev, [msgId]: 'good' }));
+                              ApiService.submitFeedback({
+                                message_id: msgId,
+                                question: messages.find(m => m.type === 'user' && messages.indexOf(m) < messages.indexOf(message))?.content ?? '',
+                                sql: message.sql_query ?? undefined,
+                                final_answer: message.content,
+                                rating: 'good',
+                                session_id: sessionId.current,
+                              });
+                            }}
+                            className="p-1 rounded text-gray-400 hover:text-green-600 hover:bg-green-50 transition-colors"
+                            title="Helpful"
+                          >
+                            <ThumbsUp className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const msgId = message.id!;
+                              setFeedbackSent(prev => ({ ...prev, [msgId]: 'bad' }));
+                              ApiService.submitFeedback({
+                                message_id: msgId,
+                                question: messages.find(m => m.type === 'user' && messages.indexOf(m) < messages.indexOf(message))?.content ?? '',
+                                sql: message.sql_query ?? undefined,
+                                final_answer: message.content,
+                                rating: 'bad',
+                                session_id: sessionId.current,
+                              });
+                            }}
+                            className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                            title="Not helpful"
+                          >
+                            <ThumbsDown className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               </motion.div>
             ))}
@@ -416,21 +448,6 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
             </div>
           )}
 
-          {/* Data table upload badge */}
-          {uploadedFile && (
-            <div className="max-w-4xl mx-auto mb-3">
-              <div className="inline-flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-2 shadow-sm">
-                {getFileIcon(uploadedFile.name)}
-                <div className="flex flex-col min-w-0">
-                  <span className="text-sm font-medium text-gray-900 truncate">{uploadedFile.name}</span>
-                </div>
-                <button onClick={removeUploadedFile} className="p-1 text-gray-400 hover:text-gray-600 rounded">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
           <div className="flex items-center gap-4 max-w-4xl mx-auto">
             <div className="flex-1 relative">
               <textarea
@@ -447,13 +464,13 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', uploadedTable,
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isLoading || isUploading}
                 className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-gray-500 hover:text-blue-600 transition-colors disabled:opacity-50"
-                title="Upload CSV/Excel for data queries, or PDF to update knowledge base"
+                title="Upload PDF to update knowledge base"
               >
                 {isUploading
                   ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600" />
                   : <Upload className="w-5 h-5" />}
               </button>
-              <input ref={fileInputRef} type="file" onChange={handleFileChange} accept=".csv,.xlsx,.xls,.pdf" className="hidden" />
+              <input ref={fileInputRef} type="file" onChange={handleFileChange} accept=".pdf" className="hidden" />
             </div>
             {!user && (
               <div className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg flex-shrink-0">

@@ -1,81 +1,59 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Table, Search, PanelRightOpen, PanelLeftClose } from "lucide-react";
-import { queryHistoryService } from "../services/queryHistoryService";
+import { Search, PanelRightOpen, PanelLeftClose, MessageSquare, Pin, PinOff, Trash2 } from "lucide-react";
+import { sessionHistoryService, type ConversationSession } from "../services/queryHistoryService";
+import { useAuth } from "../hooks/useAuth";
 
-interface TableInfo {
-  name: string;
-  columns: { name: string; type: string }[];
-  row_count: number;
-  is_uploaded: boolean;
-}
 
 const Sidebar: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
-  const [recentQueries, setRecentQueries] = useState<string[]>([]);
-  const [tables, setTables] = useState<TableInfo[]>([]);
+  const [sessions, setSessions] = useState<ConversationSession[]>([]);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
-    loadRecentQueries();
-    fetchTablesWithRetry();
+    loadSessions();
 
-    // Refresh recent queries when localStorage changes (cross-tab or same-tab updates)
-    const handleStorage = () => loadRecentQueries();
-    window.addEventListener('storage', handleStorage);
-    window.addEventListener('queryHistoryUpdated', handleStorage);
+    const refresh = () => loadSessions();
+    window.addEventListener('queryHistoryUpdated', refresh);
+    window.addEventListener('storage', refresh);
     return () => {
-      window.removeEventListener('storage', handleStorage);
-      window.removeEventListener('queryHistoryUpdated', handleStorage);
+      window.removeEventListener('queryHistoryUpdated', refresh);
+      window.removeEventListener('storage', refresh);
     };
-  }, []);
+  }, [user?.username]);
 
-  const loadRecentQueries = () => {
-    const queries = queryHistoryService.getRecentQueries().slice(0, 10);
-    setRecentQueries(queries.map(q => q.query));
+  const loadSessions = () => {
+    if (!user) { setSessions([]); return; }
+    setSessions(sessionHistoryService.getSessions(user.username).slice(0, 15));
   };
 
-  const fetchTables = async (): Promise<boolean> => {
-    try {
-      const response = await fetch('http://localhost:8000/tables');
-      if (response.ok) {
-        const data = await response.json();
-        const loaded = data.tables || [];
-        setTables(loaded);
-        return loaded.length > 0;
-      }
-    } catch (error) {
-      console.log('Failed to fetch tables:', error);
-    }
-    return false;
+  const handleSessionClick = (session: ConversationSession) => {
+    navigate(`/agent?session=${encodeURIComponent(session.session_id)}`);
   };
 
-  const fetchTablesWithRetry = async () => {
-    for (let i = 0; i < 5; i++) {
-      const ok = await fetchTables();
-      if (ok) return;
-      await new Promise(r => setTimeout(r, 2000));
+  const handleDelete = (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    if (confirmDeleteId === sessionId) {
+      sessionHistoryService.deleteSession(user!.username, sessionId);
+      setConfirmDeleteId(null);
+      loadSessions();
+      window.dispatchEvent(new Event('queryHistoryUpdated'));
+    } else {
+      setConfirmDeleteId(sessionId);
     }
   };
 
-  const handleQueryClick = (query: string) => {
-    navigate(`/chat?query=${encodeURIComponent(query)}`);
+  const handlePin = (e: React.MouseEvent, session: ConversationSession) => {
+    e.stopPropagation();
+    sessionHistoryService.pinSession(user!.username, session.session_id, !session.pinned);
+    loadSessions();
   };
 
-  const handleTableClick = (tableName: string) => {
-    navigate(`/chat?uploaded_table=${encodeURIComponent(tableName)}`);
-  };
-
-  const formatQueryDisplay = (query: string, maxLength: number = 35) => {
-    return query.length > maxLength ? `${query.substring(0, maxLength)}...` : query;
-  };
-
-  const formatTableName = (tableName: string) => {
-    if (tableName.startsWith('uploaded_')) {
-      return tableName.replace('uploaded_', '').replace(/_/g, ' ');
-    }
-    return tableName.replace(/_/g, ' ');
-  };
+  const truncate = (text: string, max = 35) =>
+    text.length > max ? `${text.slice(0, max)}…` : text;
 
   const frequentQueries = [
     "What is the totalUSD by category of operationsExpenses.projectedOPEX?",
@@ -84,13 +62,25 @@ const Sidebar: React.FC = () => {
     "Show me records of DAS_NPI_Development_Cost_EBR",
   ];
 
-  const uploadedTables = tables.filter(table => table.is_uploaded);
+  // Find a session where the first user message matches this query exactly.
+  // If found, open it like a recent conversation; otherwise start a new one.
+  const handleFrequentQueryClick = (query: string) => {
+    const normalised = query.trim().toLowerCase();
+    const existing = sessions.find(s => {
+      const firstUser = s.messages.find(m => m.type === 'user');
+      return firstUser?.content.trim().toLowerCase() === normalised;
+    });
+    if (existing) {
+      navigate(`/agent?session=${encodeURIComponent(existing.session_id)}`);
+    } else {
+      navigate(`/agent?query=${encodeURIComponent(query)}`);
+    }
+  };
 
   // ── Collapsed view ────────────────────────────────────────────────────────
   if (collapsed) {
     return (
       <aside className="w-14 bg-gray-100 text-gray-700 min-h-screen flex flex-col items-center pt-4 gap-3 flex-shrink-0">
-        {/* Expand */}
         <button
           onClick={() => setCollapsed(false)}
           className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
@@ -98,8 +88,6 @@ const Sidebar: React.FC = () => {
         >
           <PanelRightOpen className="w-5 h-5" style={{ color: '#113D73' }} />
         </button>
-
-        {/* New query */}
         <button
           onClick={() => navigate('/')}
           className="p-2 rounded-lg hover:bg-gray-200 transition-colors"
@@ -125,12 +113,13 @@ const Sidebar: React.FC = () => {
         </button>
       </div>
 
-      {/* Scrollable Navigation Section */}
       <div className="flex-1 overflow-y-auto px-8 pb-8 pt-2">
         <nav className="flex flex-col space-y-8">
+
+          {/* New Data Query */}
           <div className="space-y-2">
             <button
-              onClick={() => navigate('/')}
+              onClick={() => navigate('/agent')}
               className="flex items-center space-x-3 hover:text-gray-900 transition-colors w-full text-left"
             >
               <svg className="w-6 h-6 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -141,7 +130,7 @@ const Sidebar: React.FC = () => {
           </div>
 
           {/* Frequently Searched */}
-          <div className="space-y-2">
+          {/* <div className="space-y-2">
             <div className="flex items-center space-x-3">
               <svg className="w-6 h-6 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
@@ -151,59 +140,84 @@ const Sidebar: React.FC = () => {
             {frequentQueries.map((query, index) => (
               <button
                 key={index}
-                onClick={() => handleQueryClick(query)}
+                onClick={() => handleFrequentQueryClick(query)}
                 className="block hover:text-gray-900 hover:bg-gray-200 transition-colors text-sm pl-9 py-1 rounded w-full text-left"
+                title={query}
               >
-                {formatQueryDisplay(query)}
+                {truncate(query)}
               </button>
             ))}
-          </div>
+          </div> */}
 
-          {/* Recent Queries */}
-          <div className="space-y-2">
-            <div className="flex items-center space-x-3">
-              <svg className="w-6 h-6 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
-                <path fillRule="evenodd" d="M4 5a2 2 0 012-2v1a1 1 0 001 1h6a1 1 0 001-1V3a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
-              </svg>
-              <span className="font-bold" style={{ color: '#113D73' }}>Recent Queries</span>
+          {/* Recent Conversations */}
+          <div className="space-y-1">
+            <div className="flex items-center space-x-3 mb-2">
+              <MessageSquare className="w-6 h-6 flex-shrink-0" style={{ color: '#113D73' }} />
+              <span className="font-bold" style={{ color: '#113D73' }}>Recent Conversations</span>
             </div>
-            {recentQueries.length > 0 ? (
-              recentQueries.map((query, index) => (
-                <button
-                  key={index}
-                  onClick={() => handleQueryClick(query)}
-                  className="block hover:text-gray-900 hover:bg-gray-200 transition-colors text-sm pl-9 py-1 rounded w-full text-left"
-                  title={query}
-                >
-                  {formatQueryDisplay(query)}
-                </button>
-              ))
+            {!user ? (
+              <p className="text-sm text-gray-400 pl-9">Sign in to see history</p>
+            ) : sessions.length === 0 ? (
+              <p className="text-sm text-gray-500 pl-9">No conversations yet</p>
             ) : (
-              <p className="text-sm text-gray-500 pl-9">No recent queries</p>
+              sessions.map(session => (
+                <div
+                  key={session.session_id}
+                  className="relative group"
+                  onMouseEnter={() => { setHoveredId(session.session_id); setConfirmDeleteId(null); }}
+                  onMouseLeave={() => { setHoveredId(null); setConfirmDeleteId(null); }}
+                >
+                  <button
+                    onClick={() => handleSessionClick(session)}
+                    className="flex items-center gap-1.5 w-full text-left text-sm py-1 px-2 rounded hover:bg-gray-200 transition-colors pr-16"
+                    title={session.title}
+                  >
+                    {session.pinned && (
+                      <Pin className="w-3 h-3 flex-shrink-0 text-blue-500 rotate-45" />
+                    )}
+                    <span className="truncate">{truncate(session.title)}</span>
+                  </button>
+
+                  {/* Action buttons — visible on hover */}
+                  {hoveredId === session.session_id && (
+                    <div className="absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
+                      {/* Pin / Unpin */}
+                      <button
+                        onClick={(e) => handlePin(e, session)}
+                        className="p-1 rounded hover:bg-gray-300 transition-colors"
+                        title={session.pinned ? 'Unpin' : 'Pin to top'}
+                      >
+                        {session.pinned
+                          ? <PinOff className="w-3.5 h-3.5 text-blue-500" />
+                          : <Pin className="w-3.5 h-3.5 text-gray-500" />
+                        }
+                      </button>
+
+                      {/* Delete */}
+                      {confirmDeleteId === session.session_id ? (
+                        <button
+                          onClick={(e) => handleDelete(e, session.session_id)}
+                          className="px-1.5 py-0.5 rounded bg-red-500 text-white text-xs hover:bg-red-600 transition-colors"
+                          title="Confirm delete"
+                        >
+                          Confirm
+                        </button>
+                      ) : (
+                        <button
+                          onClick={(e) => handleDelete(e, session.session_id)}
+                          className="p-1 rounded hover:bg-gray-300 transition-colors"
+                          title="Delete conversation"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-gray-500 hover:text-red-500" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))
             )}
           </div>
 
-          {/* Demo Tables */}
-          {uploadedTables.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center space-x-3">
-                <Table className="w-6 h-6 flex-shrink-0" style={{ color: '#113D73' }} />
-                <span className="font-bold" style={{ color: '#113D73' }}>Demo Tables</span>
-              </div>
-              {uploadedTables.map((table, index) => (
-                <button
-                  key={index}
-                  onClick={() => handleTableClick(table.name)}
-                  className="flex items-center gap-2 hover:text-gray-900 hover:bg-gray-200 transition-colors text-sm pl-9 py-1 rounded w-full text-left"
-                  title={`${table.row_count} rows · ${table.columns.length} columns`}
-                >
-                  <span className="truncate">{formatTableName(table.name)}</span>
-                  <span className="ml-auto text-xs text-gray-400 flex-shrink-0">{table.row_count}r</span>
-                </button>
-              ))}
-            </div>
-          )}
         </nav>
       </div>
     </aside>

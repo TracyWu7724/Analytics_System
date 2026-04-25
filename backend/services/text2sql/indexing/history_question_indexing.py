@@ -55,35 +55,33 @@ def index_question(
     question: str,
     data_service,
     sql: str | None = None,
+    table_name: str = "",
     max_history: int = _DEFAULT_MAX_HISTORY,
 ) -> bool:
-    """Save a question (and optionally its generated SQL) to query history.
+    """Save a question to both SQLite recent_queries and the InvertedIndex history.
 
     Args:
         question:    The user's natural-language question.
         data_service: ``DatabricksService`` instance that owns the SQLite DB.
         sql:         Generated SQL to store alongside the question.
-                     Requires :func:`ensure_sql_column` to have been called first.
+        table_name:  Fully-qualified table name the question was answered from.
+                     When provided, also recorded in the InvertedIndex so that
+                     score_tables_by_history can boost future table selection.
         max_history: Hard cap on total rows kept in ``recent_queries``.
 
     Returns:
-        ``True`` if the entry was written, ``False`` if it was skipped (duplicate)
-        or if an error occurred.
+        ``True`` if the SQLite entry was written, ``False`` if skipped or failed.
     """
     question = question.strip()
     if not question:
         return False
 
+    wrote_sqlite = False
     try:
         conn = sqlite3.connect(data_service.local_db_path)
         cursor = conn.cursor()
 
         # Dedup: skip if this exact question already appears in the recent window
-        cursor.execute(
-            "SELECT 1 FROM recent_queries ORDER BY created_at DESC LIMIT ?",
-            (_DEDUP_WINDOW,),
-        )
-        # Rebuild with actual text for the check
         cursor.execute(
             """
             SELECT query_text FROM recent_queries
@@ -96,51 +94,61 @@ def index_question(
         if question in recent_texts:
             logger.debug(f"Skipping duplicate question: {question[:60]!r}")
             conn.close()
-            return False
+        else:
+            # Write — try with sql column, fall back to text-only
+            try:
+                cursor.execute(
+                    "INSERT INTO recent_queries (query_text, sql, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                    (question, sql),
+                )
+            except sqlite3.OperationalError:
+                cursor.execute(
+                    "INSERT INTO recent_queries (query_text, created_at) VALUES (?, CURRENT_TIMESTAMP)",
+                    (question,),
+                )
 
-        # Write — try with sql column, fall back to text-only
-        try:
+            # Prune: delete oldest rows beyond the cap
             cursor.execute(
-                "INSERT INTO recent_queries (query_text, sql, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-                (question, sql),
-            )
-        except sqlite3.OperationalError:
-            # sql column does not exist yet — write text only
-            cursor.execute(
-                "INSERT INTO recent_queries (query_text, created_at) VALUES (?, CURRENT_TIMESTAMP)",
-                (question,),
+                """
+                DELETE FROM recent_queries
+                WHERE id NOT IN (
+                    SELECT id FROM recent_queries
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                )
+                """,
+                (max_history,),
             )
 
-        # Prune: delete oldest rows beyond the cap
-        cursor.execute(
-            """
-            DELETE FROM recent_queries
-            WHERE id NOT IN (
-                SELECT id FROM recent_queries
-                ORDER BY created_at DESC
-                LIMIT ?
-            )
-            """,
-            (max_history,),
-        )
-
-        conn.commit()
-        conn.close()
-        logger.info(f"Indexed question: {question[:60]!r}")
-        return True
+            conn.commit()
+            conn.close()
+            logger.info(f"Indexed question: {question[:60]!r}")
+            wrote_sqlite = True
 
     except Exception as exc:
-        logger.error(f"Failed to index question: {exc}")
-        return False
+        logger.error(f"Failed to index question to SQLite: {exc}")
+
+    # Mirror to InvertedIndex history so score_tables_by_history stays in sync
+    if table_name:
+        try:
+            from .inverted_index import get_inverted_index
+            idx = get_inverted_index()
+            if idx is not None and idx.is_ready():
+                idx.add_question(question, table_name)
+        except Exception as exc:
+            logger.debug(f"Failed to update InvertedIndex history: {exc}")
+
+    return wrote_sqlite
 
 
 def index_question_background(
     question: str,
     data_service,
     sql: str | None = None,
+    table_name: str = "",
 ) -> None:
     """Fire-and-forget wrapper suitable for FastAPI ``BackgroundTasks``.
 
     Swallows all exceptions so a history write never crashes the request.
     """
-    index_question(question, data_service, sql=sql)
+    index_question(question, data_service, sql=sql, table_name=table_name)
