@@ -32,6 +32,10 @@ class DatabricksService:
         if not all([self.server_hostname, self.http_path, self.token]):
             logger.warning("Databricks configuration incomplete — set DATABRICKS_SERVER_HOSTNAME, DATABRICKS_HTTP_PATH, DATABRICKS_TOKEN.")
     
+    def init_local_db(self) -> None:
+        """No-op kept for call-site compatibility. Data is served from Databricks."""
+        pass
+
     def get_databricks_connection(self):
         """Get a PAT-authenticated connection to Databricks."""
         try:
@@ -40,7 +44,6 @@ class DatabricksService:
                 http_path=self.http_path,
                 access_token=self.token,
                 session_configuration={
-                    "ansi_mode": "true",
                     "timezone": "UTC",
                 },
                 _tls_no_verify=True,  # bypass corp/self-signed CA chain on macOS

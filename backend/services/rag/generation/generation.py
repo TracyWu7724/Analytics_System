@@ -32,9 +32,13 @@ def build_prompt(
         A single string suitable for passing to ask_llm().
     """
     system = (
-        "You are a helpful assistant. "
-        "Answer the user's question using ONLY the information in the provided context. "
-        "If the answer cannot be found in the context, say so clearly. "
+        "You are a helpful product specialist for Loctite adhesives. "
+        "Answer the user's question using the information in the provided context. "
+        "If the question asks for product recommendations or alternatives, describe "
+        "the properties of the products present in the context — even if the context "
+        "does not explicitly compare them. Use the available product data to help the "
+        "user choose. "
+        "If the answer truly cannot be found in the context, say so briefly. "
         "Be concise and factual."
     )
 

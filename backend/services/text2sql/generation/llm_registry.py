@@ -6,13 +6,12 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 LLM_MODELS: Dict[str, Dict[str, str]] = {
-    "gpt-5.4":          {"provider": "openai",  "display_name": "GPT-5.4",          "requires": "OPENAI_API_KEY"},
     "gpt-4o":           {"provider": "openai",  "display_name": "GPT-4o",           "requires": "OPENAI_API_KEY"},
     "gpt-4o-mini":      {"provider": "openai",  "display_name": "GPT-4o Mini",      "requires": "OPENAI_API_KEY"},
     "gemini-2.5-flash": {"provider": "google",  "display_name": "Gemini 2.5 Flash", "requires": "GEMINI_API_KEY"},
 }
 
-DEFAULT_LLM_MODEL = "gpt-5.4"
+DEFAULT_LLM_MODEL = "gpt-4o"
 _llm_cache: Dict[str, Any] = {}
 
 

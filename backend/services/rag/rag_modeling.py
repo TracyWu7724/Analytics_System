@@ -38,6 +38,10 @@ class PreparedQuery:
     rewritten: str
     expansions: list[str] = field(default_factory=list)
     filters: dict[str, Any] = field(default_factory=dict)
+    # When set, use this query for final reranking instead of `rewritten`.
+    # Useful for comparative questions where the concept query ("lower strength
+    # adhesive") should rank alternative products higher than the named product.
+    rerank_query: str = ""
 
     def all_queries(self) -> list[str]:
         ordered = [self.original, self.rewritten, *self.expansions]

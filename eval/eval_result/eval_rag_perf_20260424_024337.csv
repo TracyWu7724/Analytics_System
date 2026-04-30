@@ -1,5 +1,0 @@
-variant,use_expansion,use_reranker,answer_relevance,avg_latency_ms
-vanilla,False,False,0.0,0.0
-pre_retrieval,True,False,0.0,0.0
-post_retrieval,False,True,0.0,0.0
-full_pipeline,True,True,0.0,0.0

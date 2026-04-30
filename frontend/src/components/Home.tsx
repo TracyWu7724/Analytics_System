@@ -107,7 +107,7 @@ const [selectedModel, setSelectedModel] = useState<string>('gemini-2.5-flash');
                       exit={{ opacity: 0 }}
                       className="text-2xl md:text-4xl lg:text-5xl font-bold mb-4 md:mb-6 tracking-tight text-gray-900" style={{ color: '#113D73' }}
                     >
-                      Multi-Agent System for Analytics and Insights
+                      Analytics System for Business Insights
                     </motion.h1>
                     <motion.p
                       initial={{ opacity: 0 }}

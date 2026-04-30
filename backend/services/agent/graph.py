@@ -111,6 +111,7 @@ def build_agent(
     initial_k: int = 10,
     final_k: int = 5,
     value_index=None,
+    product_index=None,
 ):
     """
     Compile and return the LangGraph agent.
@@ -120,7 +121,7 @@ def build_agent(
     """
     # Bind runtime dependencies into node functions
     _schema = functools.partial(schema_node, data_service=data_service)
-    _sql = functools.partial(sql_node, data_service=data_service, value_index=value_index)
+    _sql = functools.partial(sql_node, data_service=data_service, value_index=value_index, product_index=product_index)
     _rag = functools.partial(
         rag_node,
         metadata_path=metadata_path,
@@ -129,6 +130,7 @@ def build_agent(
         reranker_model_name=reranker_model_name,
         initial_k=initial_k,
         final_k=final_k,
+        product_index=product_index,
     )
 
     # ── Build graph ──────────────────────────────────────────────────────────

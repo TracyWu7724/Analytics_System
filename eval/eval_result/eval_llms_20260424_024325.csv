@@ -1,5 +1,0 @@
-model,rag_relevance,sql_accuracy,avg_latency_ms
-gemini-2.5-flash,0.0,0.0,3515.6
-gpt-4o,0.35,1.0,2171.8
-gpt-4o-mini,0.35,1.0,2227.5
-gpt-5.4,0.0,1.0,1648.6

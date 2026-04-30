@@ -20,8 +20,9 @@ interface AgentChatProps {
 
 // ── Route badge ───────────────────────────────────────────────────────────────
 const ROUTE_META: Record<string, { label: string; Icon: React.FC<any>; color: string; bg: string }> = {
-  sql:  { label: 'Text2SQL',   Icon: Database,  color: 'text-blue-700',  bg: 'bg-blue-50 border-blue-200' },
-  rag:  { label: 'Product Manuals RAG',   Icon: BookOpen,  color: 'text-green-700', bg: 'bg-green-50 border-green-200' },
+  sql:    { label: 'Text2SQL',              Icon: Database,  color: 'text-blue-700',   bg: 'bg-blue-50 border-blue-200' },
+  rag:    { label: 'Product Manuals RAG',   Icon: BookOpen,  color: 'text-green-700',  bg: 'bg-green-50 border-green-200' },
+  both:   { label: 'Text2SQL + RAG',        Icon: Zap,       color: 'text-purple-700', bg: 'bg-purple-50 border-purple-200' },
 };
 
 const RouteBadge: React.FC<{ route: string; reasoning?: string }> = ({ route, reasoning }) => {
@@ -40,7 +41,11 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
   const navigate = useNavigate();
   const { user } = useAuth();
   // Stable session ID: restore from URL param, or generate a new one
-  const sessionId = useRef<string>(sessionIdProp ?? crypto.randomUUID());
+  const sessionId = useRef<string>(sessionIdProp ?? (
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+  ));
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -48,7 +53,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [kbUpdateMessage, setKbUpdateMessage] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel || 'gpt-5.4');
+  const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel || 'gpt-4o');
   const [availableModels, setAvailableModels] = useState<{ id: string; display_name: string; provider: string; available: boolean }[]>([]);
   const [feedbackSent, setFeedbackSent] = useState<Record<string, 'good' | 'bad'>>({});
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
@@ -126,20 +131,36 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
   }, [initialQuery]);
 
 
-  // ── Agent query ─────────────────────────────────────────────────────────────
-  const executeAgentQuery = async (question: string) => {
-    setLoadingStep('Routing your question...');
-    await new Promise(r => setTimeout(r, 100));
+  // ── Progress step labels ──────────────────────────────────────────────────
+  const STEP_LABELS: Record<string, string> = {
+    routing:    'Understanding context...',
+    columns:    'Retrieving table and columns...',
+    generating: 'Generating SQL...',
+    executing:  'Executing SQL...',
+    validating: 'Validating result...',
+    retrieving: 'Searching knowledge base...',
+  };
+
+  // ── Agent query (streaming) ───────────────────────────────────────────────
+  const executeAgentQuery = (question: string): Promise<any> => {
+    setLoadingStep('Understanding context...');
 
     const history = messages
       .filter(m => !m.isLoading)
       .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }))
       .slice(-10);
 
-    const result = await ApiService.executeAgentQuery(question, undefined, selectedModel, history, sessionId.current);
-
-    setLoadingStep('');
-    return result;
+    return new Promise((resolve) => {
+      ApiService.executeAgentQueryStream(
+        question,
+        selectedModel,
+        history,
+        sessionId.current,
+        (_step, label) => setLoadingStep(label),
+        (data) => { setLoadingStep(''); resolve(data); },
+        (errMsg) => { setLoadingStep(''); resolve({ error: errMsg }); },
+      );
+    });
   };
 
   const handleSendMessage = async (messageContent: string = inputValue) => {
@@ -172,7 +193,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
       let results: QueryResult[] | undefined;
       if (data.sql_rows && data.sql_rows.length > 0) {
         const columns = Object.keys(data.sql_rows[0]);
-        results = [{ columns, values: data.sql_rows.map(row => columns.map(c => row[c])) }];
+        results = [{ columns, values: data.sql_rows.map((row: Record<string, unknown>) => columns.map(c => row[c])) }];
       }
 
       // Determine display content
@@ -198,6 +219,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
         sql_query: data.sql_query,
         sql_rows: data.sql_rows,
         rag_answer: data.final_answer ?? undefined,
+        rag_verification: data.rag_verification,
         error: data.error,
         trace_url: data.trace_url,
       };
@@ -268,7 +290,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
               <Zap className="w-4 h-4 text-white" />
             </div>
             <div>
-              <h1 className="font-semibold text-gray-900">Decision Agent</h1>
+              <h1 className="font-semibold text-gray-900">Analytics Agent</h1>
               <p className="text-xs text-gray-400">Automatically routes to SQL or RAG</p>
             </div>
           </div>
@@ -304,7 +326,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                 <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ backgroundColor: '#EBF2FB' }}>
                   <Zap className="w-8 h-8" style={{ color: '#113D73' }} />
                 </div>
-                <h3 className="text-lg font-medium text-gray-900 mb-2">Decision Agent</h3>
+                <h3 className="text-lg font-medium text-gray-900 mb-2">Analytics Agent</h3>
                 <p className="text-gray-500 max-w-sm mx-auto">
                   Ask anything. The agent will route data questions to Text2SQL, product manual questions to RAG, complex questions use both.
                 </p>
@@ -329,8 +351,19 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                 <div className="max-w-3xl w-full">
                   {/* Route badge — above assistant messages */}
                   {message.type === 'assistant' && message.route && !message.isLoading && (
-                    <div className="mb-1.5">
+                    <div className="mb-1.5 flex items-center gap-2 flex-wrap">
                       <RouteBadge route={message.route} reasoning={message.route_reasoning} />
+                      {message.rag_verification && !message.rag_verification.passed && (
+                        <span
+                          title={`Verification gate ${message.rag_verification.failed_layer} triggered`}
+                          className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700"
+                        >
+                          <span>⚠</span>
+                          {message.rag_verification.failed_layer === 1 && 'Product not found'}
+                          {message.rag_verification.failed_layer === 2 && 'Low retrieval quality'}
+                          {message.rag_verification.failed_layer === 3 && 'Low grounding'}
+                        </span>
+                      )}
                     </div>
                   )}
 
@@ -386,42 +419,56 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                         </span>
                       ) : (
                         <>
-                          <button
-                            onClick={() => {
+                          {(() => {
+                            // Build feedback context once for both buttons.
+                            // Find the index of this assistant message, then walk
+                            // backwards to find the paired user message and the
+                            // last N completed turns for the history snapshot.
+                            const msgIdx = messages.indexOf(message);
+                            const pairedQuestion = messages
+                              .slice(0, msgIdx)
+                              .filter(m => m.type === 'user')
+                              .at(-1)?.content ?? '';
+                            const historySnapshot = messages
+                              .slice(0, msgIdx)
+                              .filter(m => !m.isLoading)
+                              .slice(-6)
+                              .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
+
+                            const submitFeedback = (rating: 'good' | 'bad') => {
                               const msgId = message.id!;
-                              setFeedbackSent(prev => ({ ...prev, [msgId]: 'good' }));
+                              setFeedbackSent(prev => ({ ...prev, [msgId]: rating }));
                               ApiService.submitFeedback({
-                                message_id: msgId,
-                                question: messages.find(m => m.type === 'user' && messages.indexOf(m) < messages.indexOf(message))?.content ?? '',
-                                sql: message.sql_query ?? undefined,
+                                message_id:   msgId,
+                                question:     pairedQuestion,
+                                sql:          message.sql_query ?? undefined,
                                 final_answer: message.content,
-                                rating: 'good',
-                                session_id: sessionId.current,
+                                rating,
+                                session_id:   sessionId.current,
+                                route:        message.route ?? undefined,
+                                history:      historySnapshot,
                               });
-                            }}
+                            };
+
+                            return (
+                              <>
+                          <button
+                            onClick={() => submitFeedback('good')}
                             className="p-1 rounded text-gray-400 hover:text-green-600 hover:bg-green-50 transition-colors"
                             title="Helpful"
                           >
                             <ThumbsUp className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => {
-                              const msgId = message.id!;
-                              setFeedbackSent(prev => ({ ...prev, [msgId]: 'bad' }));
-                              ApiService.submitFeedback({
-                                message_id: msgId,
-                                question: messages.find(m => m.type === 'user' && messages.indexOf(m) < messages.indexOf(message))?.content ?? '',
-                                sql: message.sql_query ?? undefined,
-                                final_answer: message.content,
-                                rating: 'bad',
-                                session_id: sessionId.current,
-                              });
-                            }}
+                            onClick={() => submitFeedback('bad')}
                             className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
                             title="Not helpful"
                           >
                             <ThumbsDown className="w-3.5 h-3.5" />
                           </button>
+                              </>
+                            );
+                          })()}
                         </>
                       )}
                     </div>

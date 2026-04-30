@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # ── Constants ─────────────────────────────────────────────────────────────────
 INDEX_VERSION   = 2
 MAX_AGE_HOURS   = 24          # rebuild if index is older than this
-MAX_PER_COL     = 300         # max DISTINCT values fetched per column
+MAX_PER_COL     = 1000        # max DISTINCT values fetched per column
 EMB_TOP_K       = 10          # candidates passed to embedding reranker
 FOUND_THRESHOLD = 0.72        # combined score → "found"
 SUGGEST_THRESHOLD = 0.45      # combined score → "possible match"
@@ -444,9 +444,15 @@ class InvertedIndex:
         with self._lock:
             exact_hit = self._exact.get(h)
 
+        def _table_matches(tbl: str) -> bool:
+            """Suffix-tolerant table filter — handles catalog.schema.table vs bare table name."""
+            if not table:
+                return True
+            return tbl == table or tbl.endswith("." + table) or table.endswith("." + tbl)
+
         if exact_hit:
             tbl, col, val = exact_hit
-            if table is None or tbl == table:
+            if _table_matches(tbl):
                 return SearchResult(
                     query=cand, found=True, exact=True, confidence=1.0,
                     top_matches=[{"table": tbl, "col": col, "value": val,
@@ -465,7 +471,7 @@ class InvertedIndex:
             for tok in tokens:
                 for posting in self._values.get(tok, []):
                     tbl, col, val = posting
-                    if table and tbl != table:
+                    if not _table_matches(tbl):
                         continue
                     candidate_counts[posting] = candidate_counts.get(posting, 0) + 1
 
@@ -477,14 +483,18 @@ class InvertedIndex:
         scored: List[Dict] = []
 
         for (tbl, col, val), hit_count in candidate_counts.items():
-            # Symmetric overlap: min(matched_in_query, matched_in_value) / max(len_q, len_v)
             val_tokens = _tokenise(val)
+            # Symmetric overlap (used as primary sort key)
             overlap = hit_count / max(n_tokens, len(val_tokens))
+            # Query-side precision: fraction of *query* tokens matched.
+            # Stored separately so the embedding-fallback path can use it.
+            query_precision = hit_count / n_tokens if n_tokens else 0.0
             scored.append({
                 "table": tbl, "col": col, "value": val,
-                "token_score": round(overlap, 3),
-                "emb_score": 0.0,
-                "confidence": 0.0,
+                "token_score":     round(overlap, 3),
+                "query_precision": round(query_precision, 3),
+                "emb_score":       0.0,
+                "confidence":      0.0,
             })
 
         scored.sort(key=lambda x: x["token_score"], reverse=True)
@@ -504,9 +514,12 @@ class InvertedIndex:
                 # Stage 5: Combined confidence
                 m["confidence"] = round(0.35 * m["token_score"] + 0.65 * max(float(sims[i]), 0.0), 3)
         except Exception:
-            # Embedding unavailable — fall back to token score only
+            # Embedding unavailable — fall back to token scores only.
+            # Use query_precision (all query tokens matched?) rather than the
+            # symmetric overlap, so "loctite 243" still finds
+            # "loctite 243 threadlocker" even though overlap = 2/3 < threshold.
             for m in top_k:
-                m["confidence"] = m["token_score"]
+                m["confidence"] = round(max(m["token_score"], m["query_precision"]), 3)
 
         top_k.sort(key=lambda x: x["confidence"], reverse=True)
         best = top_k[0]["confidence"] if top_k else 0.0

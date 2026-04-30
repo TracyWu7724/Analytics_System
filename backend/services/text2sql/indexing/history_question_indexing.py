@@ -77,56 +77,42 @@ def index_question(
         return False
 
     wrote_sqlite = False
-    try:
-        conn = sqlite3.connect(data_service.local_db_path)
-        cursor = conn.cursor()
+    local_db_path = getattr(data_service, "local_db_path", None)
+    if local_db_path:
+        try:
+            conn = sqlite3.connect(local_db_path)
+            cursor = conn.cursor()
 
-        # Dedup: skip if this exact question already appears in the recent window
-        cursor.execute(
-            """
-            SELECT query_text FROM recent_queries
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (_DEDUP_WINDOW,),
-        )
-        recent_texts = {row[0] for row in cursor.fetchall()}
-        if question in recent_texts:
-            logger.debug(f"Skipping duplicate question: {question[:60]!r}")
-            conn.close()
-        else:
-            # Write — try with sql column, fall back to text-only
-            try:
-                cursor.execute(
-                    "INSERT INTO recent_queries (query_text, sql, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
-                    (question, sql),
-                )
-            except sqlite3.OperationalError:
-                cursor.execute(
-                    "INSERT INTO recent_queries (query_text, created_at) VALUES (?, CURRENT_TIMESTAMP)",
-                    (question,),
-                )
-
-            # Prune: delete oldest rows beyond the cap
+            # Dedup: skip if this exact question already appears in the recent window
             cursor.execute(
-                """
-                DELETE FROM recent_queries
-                WHERE id NOT IN (
-                    SELECT id FROM recent_queries
-                    ORDER BY created_at DESC
-                    LIMIT ?
-                )
-                """,
-                (max_history,),
+                "SELECT query_text FROM recent_queries ORDER BY created_at DESC LIMIT ?",
+                (_DEDUP_WINDOW,),
             )
-
-            conn.commit()
+            recent_texts = {row[0] for row in cursor.fetchall()}
+            if question in recent_texts:
+                logger.debug(f"Skipping duplicate question: {question[:60]!r}")
+            else:
+                try:
+                    cursor.execute(
+                        "INSERT INTO recent_queries (query_text, sql, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                        (question, sql),
+                    )
+                except sqlite3.OperationalError:
+                    cursor.execute(
+                        "INSERT INTO recent_queries (query_text, created_at) VALUES (?, CURRENT_TIMESTAMP)",
+                        (question,),
+                    )
+                cursor.execute(
+                    "DELETE FROM recent_queries WHERE id NOT IN "
+                    "(SELECT id FROM recent_queries ORDER BY created_at DESC LIMIT ?)",
+                    (max_history,),
+                )
+                conn.commit()
+                logger.info(f"Indexed question: {question[:60]!r}")
+                wrote_sqlite = True
             conn.close()
-            logger.info(f"Indexed question: {question[:60]!r}")
-            wrote_sqlite = True
-
-    except Exception as exc:
-        logger.error(f"Failed to index question to SQLite: {exc}")
+        except Exception as exc:
+            logger.error(f"Failed to index question to SQLite: {exc}")
 
     # Mirror to InvertedIndex history so score_tables_by_history stays in sync
     if table_name:

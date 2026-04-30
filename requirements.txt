@@ -1,0 +1,42 @@
+# Production dependencies (no test/dev tools)
+
+# --- API / app layer ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-dotenv>=1.0
+langgraph>=0.2
+requests>=2.32
+pydantic>=2.9
+python-multipart>=0.0.9
+
+# --- Data / files ---
+pandas>=2.2
+numpy>=1.26
+openpyxl>=3.1
+
+# --- Databricks / SQL ---
+databricks-sdk>=0.40
+databricks-sql-connector>=3.4
+
+# --- RAG / embeddings / retrieval ---
+sentence-transformers>=3.0
+transformers>=4.45
+accelerate>=0.34
+faiss-cpu>=1.8.0
+unstructured[pdf]>=0.15
+fuzzywuzzy>=0.18
+python-Levenshtein>=0.25
+rapidfuzz>=3.0
+rank-bm25>=0.2.2
+spacy>=3.7
+torch>=2.4
+tqdm>=4.66
+
+# --- LLM providers ---
+langchain-openai>=0.2
+langchain-google-genai>=2.0
+langchain-anthropic>=0.3
+langchain-ollama
+openai>=1.50
+google-genai>=1.0
+langsmith>=0.2

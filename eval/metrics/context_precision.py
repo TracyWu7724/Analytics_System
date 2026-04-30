@@ -1,9 +1,5 @@
 """Contextual precision metric for RAG evaluation.
 
-WrenAI's version operates on table.column strings extracted from SQL.
-Here, context and retrieval_context are lists of text chunk strings
-(e.g. document IDs, chunk contents, or passage texts).
-
 Contextual precision asks: "Of the chunks the retriever returned, how many
 of the relevant ones were ranked at the top?"
 

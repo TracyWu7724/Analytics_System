@@ -1,0 +1,44 @@
+# Version control
+.git
+.gitignore
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python cache
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node
+frontend/node_modules
+frontend/build
+frontend/.env
+frontend/.env.*
+
+# Local data / indexes (loaded from S3 or rebuilt at runtime)
+data/
+backend/index/
+logs/
+
+# Eval & notebooks (not needed in production)
+eval/eval_result/
+assets/
+scripts/
+tests/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dev tools
+*.log
+.langchain.db
+langchain.db
+.deepeval

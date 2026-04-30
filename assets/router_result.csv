@@ -1,0 +1,61 @@
+id,question,expected_norm,answerable,predicted_mode,predicted_answerable,latency_ms,hallunication
+1,What is LOCTITE 243 used for?,rag,TRUE,rag,TRUE,896.1,0
+2,What materials can LOCTITE 435 bond?,rag,TRUE,rag,TRUE,929.2,0
+3,What is the curing mechanism of LOCTITE 567?,rag,TRUE,rag,TRUE,812.1,0
+4,Which Loctite product is suitable for porous materials?,rag,TRUE,rag,TRUE,1024.5,0
+5,What is the strength type of LOCTITE 680?,rag,TRUE,rag,TRUE,1030.2,0
+6,Which adhesive works for rubber bonding?,rag,TRUE,rag,TRUE,1015.8,0
+7,What is the viscosity of LOCTITE 454?,rag,TRUE,rag,TRUE,867.1,0
+8,Which Loctite is used for sealing pipe threads?,rag,TRUE,rag,TRUE,620.7,0
+9,What temperature performance does LOCTITE 620 support?,rag,TRUE,rag,TRUE,1279.1,0
+10,Which Loctite is UV curing?,rag,TRUE,rag,TRUE,1022.4,0
+11,What is the total revenue of LOCTITE 243?,sql,TRUE,sql,TRUE,791.6,0
+12,Which Loctite products have inventory below 100?,sql,TRUE,sql,TRUE,595.2,0
+13,Show sales trend for LOCTITE 401.,sql,TRUE,sql,TRUE,542.5,0
+14,Which supplier provides LOCTITE 435?,sql,TRUE,rag,TRUE,629.3,0
+15,What is the budget for LOCTITE 680?,sql,TRUE,sql,TRUE,1133,0
+16,List all products with stock above 500.,sql,TRUE,sql,TRUE,675.3,0
+17,Which region has highest sales for LOCTITE 243?,sql,TRUE,sql,TRUE,1042,0
+18,What is average revenue per product?,sql,TRUE,sql,TRUE,644.7,0
+19,Show inventory levels for all adhesives.,sql,TRUE,sql,TRUE,544.5,0
+20,Which supplier has the most products?,sql,TRUE,sql,TRUE,793.4,0
+21,Which Loctite adhesive is best for metal bonding and what is its inventory?,both,TRUE,both,TRUE,901.4,0
+22,Recommend a Loctite adhesive for plastics and show its sales.,both,TRUE,both,TRUE,1229.1,0
+23,Which adhesive works for high temperature and how much stock is left?,both,TRUE,both,TRUE,615.9,0
+24,Which Loctite is suitable for electronics and what is its revenue?,both,TRUE,both,TRUE,1022.4,0
+25,Which product bonds rubber and has low inventory?,both,TRUE,both,TRUE,816.1,0
+26,What adhesive is used for porous materials and what is its supplier?,both,TRUE,rag,TRUE,644.3,0
+27,Which Loctite is UV curing and what is its sales trend?,both,TRUE,both,TRUE,1303.7,0
+28,Which adhesive is shock resistant and what is its stock level?,both,TRUE,both,TRUE,558.7,0
+29,Which Loctite works on metals and has highest revenue?,both,TRUE,both,TRUE,635.6,0
+30,Recommend a Loctite product for bonding glass and show inventory.,both,TRUE,both,TRUE,612.8,0
+31,What is LOCTITE 9999 used for?,rag,FALSE,rag,FALSE,600.4,0
+32,Which Loctite adhesive is FDA approved?,rag,FALSE,rag,FALSE,559.6,0
+33,What is the curing time for LOCTITE quantum adhesive?,rag,FALSE,rag,FALSE,570,0
+34,Which Loctite product is best for space applications?,rag,FALSE,rag,FALSE,525,0
+35,What is the density of LOCTITE SuperBond X?,rag,FALSE,rag,FALSE,585.4,0
+36,What is the revenue of LOCTITE 9999?,sql,FALSE,sql,FALSE,652.5,0
+37,Show inventory for LOCTITE ABC.,sql,FALSE,sql,FALSE,670.3,0
+38,Which supplier provides LOCTITE Unknown?,sql,FALSE,sql,FALSE,662.3,0
+39,What is the budget for LOCTITE X123?,sql,FALSE,sql,FALSE,533.7,0
+40,Show sales in Mars region.,sql,FALSE,sql,FALSE,749.9,0
+41,Which adhesive is best for bonding wood and what is its revenue?,both,TRUE,both,TRUE,703.1,0
+42,Which Loctite works for electronics and has high inventory?,both,TRUE,both,TRUE,680.6,0
+43,Which adhesive bonds plastic and has lowest sales?,both,TRUE,both,TRUE,1138.7,0
+44,Which Loctite is impact resistant and what is its supplier?,both,TRUE,rag,TRUE,1023.8,0
+45,Which adhesive is gel type and has low stock?,both,TRUE,both,TRUE,1025.2,0
+46,Explain how Loctite adhesives work chemically.,rag,FALSE,rag,FALSE,652.2,0
+47,Generate a forecast for LOCTITE 243 sales.,sql,FALSE,sql,FALSE,987,0
+48,Compare Loctite with 3M adhesives.,rag,FALSE,both,FALSE,1024.1,0
+49,Design a new adhesive using Loctite materials.,rag,FALSE,rag,FALSE,1125.2,0
+50,What is the best adhesive in the world?,rag,FALSE,rag,FALSE,817,0
+51,Which Loctite is for retaining bearings?,rag,TRUE,rag,TRUE,559.9,0
+52,What is LOCTITE 680 used for?,rag,TRUE,rag,TRUE,569.2,0
+53,Which product is for thread sealing?,rag,TRUE,rag,TRUE,618.6,0
+54,Which adhesive cures with UV light?,rag,TRUE,rag,TRUE,917.6,0
+55,Which Loctite works on metal shafts?,rag,TRUE,rag,TRUE,588.8,0
+56,Show top 3 products by revenue.,sql,TRUE,sql,TRUE,648.7,0
+57,Which products have zero inventory?,sql,TRUE,sql,TRUE,910.3,0
+58,Which supplier has lowest sales?,sql,TRUE,sql,TRUE,624.7,0
+59,What is total inventory value?,sql,TRUE,sql,TRUE,627.3,0
+60,List all products sorted by revenue.,sql,TRUE,sql,TRUE,577.2,0

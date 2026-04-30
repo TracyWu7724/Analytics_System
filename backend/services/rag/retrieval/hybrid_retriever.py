@@ -34,6 +34,21 @@ class HybridRetriever:
         self.keyword_retriever = KeywordRetriever(self.vector_store.metadata)
         self.reranker = Reranker(reranker_model_name)
 
+    @property
+    def known_product_ids(self) -> set[str]:
+        """
+        Lowercased product identifiers known to the index.
+        Combines product_id and source_file fields from every chunk's metadata
+        so that either naming convention matches during Layer-1 product checks.
+        """
+        ids: set[str] = set()
+        for m in self.vector_store.metadata:
+            if m.get("product_id"):
+                ids.add(m["product_id"].lower())
+            if m.get("source_file"):
+                ids.add(m["source_file"].lower())
+        return ids
+
     def retrieve(
         self,
         query: str,
@@ -71,4 +86,7 @@ class HybridRetriever:
                 current = merged.get(key)
                 if current is None or result.score > current.score:
                     merged[key] = result
-        return self.reranker.rerank(prepared_query.rewritten, list(merged.values()), top_k=final_k)
+        # For comparative queries use the concept query for reranking so
+        # alternative products rank above the reference product.
+        rerank_q = prepared_query.rerank_query or prepared_query.rewritten
+        return self.reranker.rerank(rerank_q, list(merged.values()), top_k=final_k)

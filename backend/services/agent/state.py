@@ -31,7 +31,8 @@ class AgentState(TypedDict):
     route_reasoning: Optional[str]  # why the router chose this route
 
     # ── SQL pipeline ─────────────────────────────────────────────────────────
-    sql_table: Optional[str]
+    sql_table: Optional[str]          # primary table (top-1)
+    sql_tables: Optional[list[str]]   # all tables used (for JOIN queries)
     sql_query: Optional[str]
     sql_rows: Optional[list[dict]]
     sql_error: Optional[str]
@@ -41,6 +42,7 @@ class AgentState(TypedDict):
     rag_answer: Optional[str]
     rag_chunks: Optional[list[dict]]  # retrieved context chunks
     rag_error: Optional[str]
+    rag_verification: Optional[dict]  # {"passed": bool, "failed_layer": int, "layers": [...]}
 
     # ── Output ───────────────────────────────────────────────────────────────
     final_answer: Optional[str]

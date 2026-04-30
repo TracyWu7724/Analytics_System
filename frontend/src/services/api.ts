@@ -256,6 +256,11 @@ export class ApiService {
     sql_rows?: Record<string, any>[];
     sql_table?: string;
     rag_chunks?: { text: string; score: number; source: string }[];
+    rag_verification?: {
+      passed: boolean;
+      failed_layer: number;
+      layers?: { layer: number; name: string; passed: boolean; score: number; detail: string }[];
+    };
     error?: string;
     trace_url?: string;
   }> {
@@ -289,12 +294,66 @@ export class ApiService {
         sql_rows: data.sql_rows,
         sql_table: data.sql_table,
         rag_chunks: data.rag_chunks,
+        rag_verification: data.rag_verification,
         error: data.error,
         trace_url: data.trace_url,
       };
     } catch (error) {
       return { error: error instanceof Error ? error.message : 'Network error' };
     }
+  }
+
+  static executeAgentQueryStream(
+    question: string,
+    llmModel: string,
+    history: { role: string; content: string }[],
+    sessionId: string,
+    onProgress: (step: string, label: string) => void,
+    onResult: (data: any) => void,
+    onError: (message: string) => void,
+  ): () => void {
+    const token = localStorage.getItem('ds_auth_token');
+    const body = JSON.stringify({ question, llm_model: llmModel, history, session_id: sessionId });
+    const controller = new AbortController();
+
+    fetch(getApiUrl('/agent/query/stream'), {
+      method: 'POST',
+      headers: {
+        ...API_CONFIG.HEADERS,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body,
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok || !response.body) {
+        onError(`Request failed: ${response.status}`);
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === 'progress') onProgress(event.step, event.label);
+            else if (event.type === 'result')  onResult(event.data);
+            else if (event.type === 'error')   onError(event.message);
+          } catch { /* malformed line */ }
+        }
+      }
+    }).catch((err) => {
+      if (err.name !== 'AbortError') onError(err.message ?? 'Stream error');
+    });
+
+    return () => controller.abort();
   }
 
   static async downloadCSV(): Promise<void> {
@@ -377,7 +436,7 @@ export class ApiService {
       return await response.json();
     } catch (error) {
       console.error('[API] Failed to fetch LLM models:', error);
-      return { models: [], default: 'gpt-5.4' };
+      return { models: [], default: 'gpt-4o' };
     }
   }
 
@@ -399,6 +458,8 @@ export class ApiService {
     rating: 'good' | 'bad';
     comment?: string;
     session_id?: string;
+    route?: string;
+    history?: { role: string; content: string }[];
   }): Promise<void> {
     try {
       const token = localStorage.getItem('ds_auth_token');
@@ -409,27 +470,19 @@ export class ApiService {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          message_id: params.message_id,
-          question: params.question,
-          sql: params.sql ?? null,
+          message_id:   params.message_id,
+          question:     params.question,
+          sql:          params.sql ?? null,
           final_answer: params.final_answer ?? null,
-          rating: params.rating,
-          comment: params.comment ?? '',
-          session_id: params.session_id ?? '',
+          rating:       params.rating,
+          comment:      params.comment ?? '',
+          session_id:   params.session_id ?? '',
+          route:        params.route ?? '',
+          history:      params.history ?? [],
         }),
       });
     } catch {
       // best-effort
-    }
-  }
-
-  static async getEvalResults(): Promise<any> {
-    try {
-      const response = await fetchWithTimeout(getApiUrl('/eval/results'), {}, API_CONFIG.QUICK_TIMEOUT);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      return { error: error instanceof Error ? error.message : 'Failed to load eval results' };
     }
   }
 

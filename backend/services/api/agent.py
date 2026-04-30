@@ -16,8 +16,12 @@ import threading
 from typing import Optional
 
 from dotenv import load_dotenv
+import queue as _queue
+import uuid
+
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -61,12 +65,16 @@ try:
     from ..agent.tools.rag_tool import run_rag
     from ..text2sql.generation.llm_registry import list_llm_models
     from ..text2sql.indexing.inverted_index import init_inverted_index
+    from ..text2sql.indexing.product_index import init_product_index
+    from ..text2sql.indexing.column_embedding_index import get_column_embedding_index
 except ImportError:
     from db.databricks_service import DatabricksService
     from agent.graph import build_agent
     from agent.tools.rag_tool import run_rag
     from generation.llm_registry import list_llm_models
     from indexing.inverted_index import init_inverted_index
+    from indexing.product_index import init_product_index
+    from indexing.column_embedding_index import get_column_embedding_index
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -103,6 +111,7 @@ def _resolve_rag_paths(embed_dir: str, model_name: str) -> tuple[str, str]:
 
 # ── Singletons ───────────────────────────────────────────────────────────────
 _data_service = DatabricksService()
+_data_service.init_local_db()
 
 # Warm schema cache in background so column-based table scoring works from first query
 def _warm_schema_cache():
@@ -125,6 +134,21 @@ _value_index = init_inverted_index(
     index_dir=os.getenv("INDEX_DIR", ""),
     embed_model_name=os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
 )
+
+_product_index = init_product_index(
+    _data_service,
+    index_dir=os.getenv("INDEX_DIR", ""),
+)
+
+# Column embedding index — load from disk if available, else build in background.
+_col_emb_index = get_column_embedding_index(
+    index_dir=os.getenv("INDEX_DIR", "") or str(
+        __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "index"
+    ),
+    embed_model_name=os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+)
+if not _col_emb_index.is_ready():
+    _col_emb_index.build(_data_service, background=True)
 
 _EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 _RERANKER_MODEL = os.getenv("RAG_RERANKER_MODEL", None)
@@ -153,6 +177,7 @@ _agent = build_agent(
     embed_model_name=_EMBED_MODEL,
     reranker_model_name=_RERANKER_MODEL,
     value_index=_value_index,
+    product_index=_product_index,
 )
 
 
@@ -169,9 +194,11 @@ class FeedbackRequest(BaseModel):
     question: str
     sql: Optional[str] = None
     final_answer: Optional[str] = None
-    rating: str          # "good" | "bad"
+    rating: str                         # "good" | "bad"
     comment: str = ""
     session_id: str = ""
+    route: str = ""                     # "sql" | "rag" | "both" | "schema"
+    history: list[dict] = []            # conversation snapshot at time of rating
 
 
 class RagQueryRequest(BaseModel):
@@ -199,6 +226,7 @@ class AgentQueryResponse(BaseModel):
     sql_table: Optional[str] = None
     sql_attempts: int = 0
     rag_chunks: Optional[list[dict]] = None
+    rag_verification: Optional[dict] = None
     error: Optional[str] = None
     trace_url: Optional[str] = None
 
@@ -270,6 +298,105 @@ def _get_optional_user():
         return lambda authorization=None: None
 
 
+@app.post("/agent/query/stream")
+async def agent_query_stream(
+    request: AgentQueryRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    """
+    SSE endpoint — streams progress events then the final result.
+
+    Event format:
+      data: {"type": "progress", "step": "generating", "label": "Generating SQL..."}
+      data: {"type": "result",   "data": { ...AgentQueryResponse fields... }}
+      data: {"type": "error",    "message": "..."}
+    """
+    try:
+        from ..agent.progress import register, unregister
+    except ImportError:
+        from agent.progress import register, unregister
+
+    session_id = request.session_id or str(uuid.uuid4())
+    prog_queue = register(session_id)
+
+    initial_state: dict = {
+        "question":         request.question,
+        "history":          request.history,
+        "llm_model":        request.llm_model,
+        "session_id":       session_id,
+        "user_id":          "",
+        "uploaded_table":   None,
+        "route":            None,
+        "route_reasoning":  None,
+        "sql_table":        None,
+        "sql_tables":       None,
+        "sql_query":        None,
+        "sql_rows":         None,
+        "sql_error":        None,
+        "sql_attempts":     0,
+        "rag_answer":       None,
+        "rag_chunks":       None,
+        "rag_error":        None,
+        "rag_verification": None,
+        "final_answer":     None,
+        "error":            None,
+        "denied_tables":    [],
+        "denied_rag_sources": [],
+    }
+
+    try:
+        from auth.permission_auth import auth_service
+        if authorization:
+            token = authorization.replace("Bearer ", "").strip()
+            user = auth_service.verify_token(token)
+            if user:
+                initial_state["user_id"] = user.username
+                initial_state = user.adjust_agent_state(initial_state)
+    except Exception:
+        pass
+
+    def _run():
+        try:
+            _tl_run_id.value = None
+            result = _run_agent(initial_state)
+            prog_queue.put({"type": "result", "data": {
+                "question":        request.question,
+                "route":           result.get("route"),
+                "route_reasoning": result.get("route_reasoning"),
+                "final_answer":    result.get("final_answer"),
+                "sql_query":       result.get("sql_query"),
+                "sql_rows":        result.get("sql_rows"),
+                "sql_table":       result.get("sql_table"),
+                "sql_attempts":    result.get("sql_attempts", 0),
+                "rag_chunks":      result.get("rag_chunks"),
+                "rag_verification":result.get("rag_verification"),
+                "error":           result.get("error"),
+                "trace_url":       None,
+            }})
+        except Exception as e:
+            prog_queue.put({"type": "error", "message": str(e)})
+        finally:
+            unregister(session_id)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    async def event_stream():
+        try:
+            while True:
+                try:
+                    event = await asyncio.to_thread(prog_queue.get, True, 1.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("type") in ("result", "error"):
+                        break
+                except _queue.Empty:
+                    yield "data: {\"type\":\"heartbeat\"}\n\n"
+        except asyncio.CancelledError:
+            unregister(session_id)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
 @app.post("/agent/query", response_model=AgentQueryResponse)
 async def agent_query(request: AgentQueryRequest, authorization: Optional[str] = Header(default=None)):
     initial_state: dict = {
@@ -289,6 +416,7 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
         "rag_answer": None,
         "rag_chunks": None,
         "rag_error": None,
+        "rag_verification": None,
         "final_answer": None,
         "error": None,
         "denied_tables": [],
@@ -328,6 +456,7 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
         sql_table=sql_table,
         sql_attempts=result.get("sql_attempts", 0),
         rag_chunks=result.get("rag_chunks"),
+        rag_verification=result.get("rag_verification"),
         error=result.get("error"),
         trace_url=trace_url,
     )
@@ -495,30 +624,179 @@ async def diagnostics():
     return result
 
 
+# ── Index management ─────────────────────────────────────────────────────────
+
+@app.post("/index/rebuild")
+async def rebuild_index():
+    """Trigger a background rebuild of the value/schema inverted index and the
+    product index.  Call this after any data change in Databricks.
+    """
+    try:
+        from ..text2sql.indexing.inverted_index import get_inverted_index
+        from ..text2sql.indexing.product_index import get_product_index
+    except ImportError:
+        from text2sql.indexing.inverted_index import get_inverted_index
+        from text2sql.indexing.product_index import get_product_index
+
+    results = {}
+
+    idx = get_inverted_index()
+    if idx is not None:
+        idx.rebuild(_data_service, background=True)
+        results["value_index"] = "rebuild started"
+    else:
+        results["value_index"] = "not initialised"
+
+    pidx = get_product_index()
+    if pidx is not None:
+        pidx.rebuild(_data_service, background=True)
+        results["product_index"] = "rebuild started"
+    else:
+        results["product_index"] = "not initialised"
+
+    try:
+        from ..text2sql.indexing.column_embedding_index import get_column_embedding_index
+    except ImportError:
+        from text2sql.indexing.column_embedding_index import get_column_embedding_index
+    col_idx = get_column_embedding_index()
+    col_idx.build(_data_service, background=True)
+    results["column_embeddings"] = "rebuild started"
+
+    return {"success": True, "message": "Index rebuild started in background", "details": results}
+
+
+@app.get("/index/products")
+async def list_products(query: Optional[str] = None, limit: int = 50):
+    """Browse the product index.  Pass ?query=243 to search for a specific product."""
+    try:
+        from ..text2sql.indexing.product_index import get_product_index
+    except ImportError:
+        from text2sql.indexing.product_index import get_product_index
+
+    pidx = get_product_index()
+    if pidx is None or not pidx.is_ready():
+        raise HTTPException(status_code=503, detail="Product index not ready")
+
+    if query:
+        hits = pidx.search(query)[:limit]
+        return {
+            "query": query,
+            "results": [
+                {
+                    "full_name":  r.full_name,
+                    "table":      r.table,
+                    "brand":      r.brand,
+                    "number":     r.number,
+                    "descriptor": r.descriptor,
+                    "variants":   r.variants,
+                }
+                for r in hits
+            ],
+        }
+
+    return {"stats": pidx.stats(), "sample": pidx.dump_variants(limit=limit)}
+
+
 # ── Eval results ─────────────────────────────────────────────────────────────
 
 @app.get("/eval/results")
 async def get_eval_results():
-    """Return the latest eval results from eval/eval_result/latest.json."""
+    """Return the latest eval results from eval/eval_result/latest.jsonl."""
     import glob as _glob
 
     eval_dir = os.path.join(
         os.path.dirname(__file__), "../../../eval/eval_result"
     )
     eval_dir = os.path.abspath(eval_dir)
-    latest_path = os.path.join(eval_dir, "latest.json")
 
-    if os.path.exists(latest_path):
-        with open(latest_path) as f:
+    def _read_jsonl(path: str) -> dict:
+        """Parse a JSONL file: first line is summary header, rest are row objects."""
+        rows: list[dict] = []
+        meta: dict = {}
+        with open(path) as f:
+            for i, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                if i == 0 and obj.get("_meta"):
+                    meta = obj
+                else:
+                    rows.append(obj)
+        result = {k: v for k, v in meta.items() if k not in ("_meta",)}
+        result["rows"] = rows
+        return result
+
+    # Prefer latest.jsonl (new format), fall back to latest.json (legacy)
+    latest_jsonl = os.path.join(eval_dir, "latest.jsonl")
+    latest_json  = os.path.join(eval_dir, "latest.json")
+
+    if os.path.exists(latest_jsonl):
+        with open(latest_jsonl) as f:
+            return json.loads(f.readline().strip())
+
+    if os.path.exists(latest_json):
+        with open(latest_json) as f:
             return json.load(f)
 
-    # Fall back to most recent individual files if latest.json doesn't exist
-    files = sorted(_glob.glob(os.path.join(eval_dir, "*.json")), reverse=True)
-    if not files:
-        return {"error": "No eval results found. Run: python -m scripts.run_eval"}
+    # Fall back to most recent per-eval JSONL
+    files = sorted(_glob.glob(os.path.join(eval_dir, "*.jsonl")), reverse=True)
+    if files:
+        return _read_jsonl(files[0])
 
-    with open(files[0]) as f:
-        return json.load(f)
+    # Last resort: legacy JSON files
+    files = sorted(_glob.glob(os.path.join(eval_dir, "*.json")), reverse=True)
+    if files:
+        with open(files[0]) as f:
+            return json.load(f)
+
+    return {"error": "No eval results found. Run: python -m scripts.run_eval"}
+
+
+@app.get("/eval/rows")
+async def get_eval_rows():
+    """Return per-row eval results from the most recent per-eval JSONL files."""
+    import glob as _glob
+
+    eval_dir = os.path.join(
+        os.path.dirname(__file__), "../../../eval/eval_result"
+    )
+    eval_dir = os.path.abspath(eval_dir)
+
+    def _read_jsonl_rows(path: str) -> tuple[list[dict], dict]:
+        rows: list[dict] = []
+        meta: dict = {}
+        with open(path) as f:
+            for i, line in enumerate(f):
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                if i == 0 and obj.get("_meta"):
+                    meta = obj
+                else:
+                    rows.append(obj)
+        return rows, meta
+
+    # Find most recent file for each eval type
+    eval_types = ["eval_text2sql", "eval_agentic", "eval_llms", "eval_rag_perf"]
+    result: dict = {}
+
+    for eval_type in eval_types:
+        pattern = os.path.join(eval_dir, f"{eval_type}_*.jsonl")
+        files = sorted(_glob.glob(pattern), reverse=True)
+        if files:
+            rows, meta = _read_jsonl_rows(files[0])
+            result[eval_type] = {
+                "rows": rows,
+                "summary": meta.get("summary", {}),
+                "timestamp": meta.get("timestamp", ""),
+            }
+
+    if not result:
+        return {"error": "No per-eval JSONL files found. Run: python -m scripts.run_eval"}
+
+    return result
 
 
 # ── Feedback ─────────────────────────────────────────────────────────────────
@@ -554,8 +832,51 @@ async def submit_feedback(
         comment=request.comment,
         session_id=request.session_id,
         user_id=user_id,
+        route=request.route,
+        history=request.history,
     )
     return {"success": True}
+
+
+# ── CSV / Excel → local SQLite ────────────────────────────────────────────────
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    if not any(file.filename.lower().endswith(ext) for ext in [".csv", ".xlsx", ".xls"]):
+        raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+
+    try:
+        from ..text2sql.db.upload_service import UploadService
+        from ..text2sql.retrieval.table_matching import invalidate_table_cache
+    except ImportError:
+        from text2sql.db.upload_service import UploadService
+        from text2sql.retrieval.table_matching import invalidate_table_cache
+
+    upload_service = UploadService(_data_service)
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+        try:
+            tmp.write(await file.read())
+            tmp.flush()
+            result = upload_service.process_uploaded_file(tmp.name, file.filename)
+            if not result["success"]:
+                raise HTTPException(status_code=400, detail=f"File processing failed: {result['error']}")
+            invalidate_table_cache()
+            return {
+                "message": "File uploaded successfully",
+                "table_name": result["table_name"],
+                "row_count": result["row_count"],
+                "column_count": result["column_count"],
+                "columns": result["columns"],
+                "original_filename": result.get("original_filename"),
+            }
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
 
 
 # ── PDF → knowledge base ──────────────────────────────────────────────────────

@@ -1,0 +1,42 @@
+services:
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      INDEX_DIR: /app/backend/index
+    volumes:
+      - index_data:/app/backend/index   # persist index across restarts
+      - rag_embed:/app/data/rag/embedding
+      - logs_data:/app/logs
+      - auth_db:/app/auth
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/agent/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:8000}
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  index_data:    # inverted index / product index JSON files (or mount S3 via EFS)
+  rag_embed:     # FAISS + metadata files for RAG
+  logs_data:
+  auth_db:

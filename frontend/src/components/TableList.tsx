@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Database, Table, BarChart3, RefreshCw } from "lucide-react";
+import { getApiUrl } from "../config/api";
 
 interface TableInfo {
   name: string;
@@ -27,7 +28,7 @@ const TableList: React.FC<TableListProps> = ({ refreshTrigger }) => {
     setError(null);
     
     try {
-      const response = await fetch('http://10.16.56.77:8000/list-tables');
+      const response = await fetch(getApiUrl('/list-tables'));
       if (!response.ok) {
         throw new Error('Failed to fetch tables');
       }

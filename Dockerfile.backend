@@ -1,0 +1,36 @@
+FROM python:3.11-slim
+
+# System deps: gcc for native extensions, poppler/tesseract for PDF parsing,
+# awscli for S3 index sync on startup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ libgomp1 \
+        poppler-utils tesseract-ocr \
+        curl awscli \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps in a separate layer for better caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Download spaCy model
+RUN python -m spacy download en_core_web_sm
+
+# Copy application source
+COPY auth/           ./auth/
+COPY backend/        ./backend/
+COPY observability/  ./observability/
+COPY docker/entrypoint.sh ./entrypoint.sh
+RUN chmod +x entrypoint.sh
+
+# Runtime directories (overridden by Docker volumes in production)
+RUN mkdir -p /app/backend/index /app/logs /app/data/rag/embedding
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV INDEX_DIR=/app/backend/index
+
+EXPOSE 8000
+
+ENTRYPOINT ["./entrypoint.sh"]

@@ -14,8 +14,13 @@ export interface ChatMessage {
   warning?: string;
   trace_url?: string;
   // Agent-specific fields
-  route?: 'sql' | 'rag' | 'both';
+  route?: 'sql' | 'rag' | 'both' | 'schema';
   route_reasoning?: string;
   rag_answer?: string;
   sql_rows?: Record<string, any>[];
+  rag_verification?: {
+    passed: boolean;
+    failed_layer: number;
+    layers?: { layer: number; name: string; passed: boolean; score: number; detail: string }[];
+  };
 }

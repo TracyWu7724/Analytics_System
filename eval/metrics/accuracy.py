@@ -22,9 +22,18 @@ import asyncio
 import traceback
 
 import orjson
-from deepeval.evaluate import TestResult
 from deepeval.metrics import BaseMetric
 from deepeval.test_case import LLMTestCase
+
+# TestResult was removed in newer deepeval versions; fall back to Any for the
+# type hint used in AccuracyMultiCandidateMetric.collect().
+try:
+    from deepeval.evaluate import TestResult
+except ImportError:
+    try:
+        from deepeval.evaluate import EvaluationResult as TestResult
+    except ImportError:
+        from typing import Any as TestResult  # type: ignore[assignment]
 
 
 def _token_set(text: str) -> set[str]:
@@ -155,9 +164,6 @@ class AccuracyMetric(BaseMetric):
 class AccuracyMultiCandidateMetric(BaseMetric):
     """Aggregate per-question best scores across multiple candidate answers.
 
-    Carries over from WrenAI unchanged — no SQL dependency.
-    Collect one AccuracyMetric result per candidate per question, then call
-    measure() once at the end to get the mean best score across all questions.
     """
 
     def __init__(self):

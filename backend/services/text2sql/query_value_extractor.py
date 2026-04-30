@@ -24,6 +24,8 @@ from typing import List, Dict
 _QUOTED     = re.compile(r'"([^"]{1,80})"|\'([^\']{1,80})\'')
 _TITLECASE  = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b')   # "Tracy Wu"
 _SINGLE_CAP = re.compile(r'\b([A-Z][a-z]{2,})\b')                    # "Alice"
+# Brand + product number: "Loctite 401", "3M 9472LE", "Loctite 243 Threadlocker"
+_BRAND_NUM  = re.compile(r'\b([A-Z][a-zA-Z]{1,}(?:\s+\d[\w\-]*)+(?:\s+[A-Z][a-z]+)*)\b')
 
 # Words unlikely to be filter values even when capitalised
 _QUESTION_STOPWORDS = {
@@ -42,7 +44,8 @@ _QUESTION_STOPWORDS = {
     "january", "february", "march", "april", "june", "july",
     "august", "september", "october", "november", "december",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    "me", "us", "them", "him", "her", "their", "our", "my",
+    "me", "us", "them", "him", "her", "his", "hers", "their", "our", "my",
+    "she", "he", "they", "it", "its", "we", "i", "you", "your",
     "hosted", "created", "owned", "assigned", "managed", "led", "run",
     "region", "department", "category", "type", "status", "level",
 }
@@ -76,9 +79,20 @@ def _rule_based(question: str) -> List[Dict]:
     # Strip quoted spans so they don't double-match
     clean = _QUOTED.sub(" ", question)
 
-    # Multi-word TitleCase runs — probable proper nouns
+    # Brand + product number runs — "Loctite 401", "Loctite 243 Threadlocker"
+    # Must run before _TITLECASE so the full phrase is seen as one candidate.
+    brand_spans: list = []
+    for m in _BRAND_NUM.finditer(clean):
+        _add(m.group(1), "rule_brand_num")
+        brand_spans.append((m.start(), m.end()))
+
+    def _in_brand_span(start: int, end: int) -> bool:
+        return any(bs <= start and end <= be for bs, be in brand_spans)
+
+    # Multi-word TitleCase runs — probable proper nouns (skip if already in a brand span)
     for m in _TITLECASE.finditer(clean):
-        _add(m.group(1), "rule_titlecase")
+        if not _in_brand_span(m.start(), m.end()):
+            _add(m.group(1), "rule_titlecase")
 
     # Single capitalised words not already captured above
     # (only if not immediately after sentence punctuation — avoids sentence starters)
@@ -160,9 +174,10 @@ def _spacy_extract(question: str) -> List[Dict]:
 _METHOD_PRIORITY = {
     "quoted":           0,
     "spacy_ner":        1,
-    "rule_titlecase":   2,
-    "spacy_noun_chunk": 3,
-    "rule_single_cap":  4,
+    "rule_brand_num":   2,   # "Loctite 401" — brand + number combined
+    "rule_titlecase":   3,
+    "spacy_noun_chunk": 4,
+    "rule_single_cap":  5,
 }
 
 

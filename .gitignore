@@ -1,8 +1,9 @@
 # Data & embeddings
 data/
 dataset/
-eval_results/
+eval/eval_result/
 index/
+eval/
 
 # Python
 .venv

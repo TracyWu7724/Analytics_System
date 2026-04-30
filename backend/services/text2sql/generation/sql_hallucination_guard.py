@@ -10,7 +10,7 @@ Covers four hallucination types:
 Each check returns a (passed: bool, error_hint: str) tuple.
 The error_hint is injected into the next generation attempt.
 
-Traces are written to eval/hallucination_traces.jsonl for analysis.
+Traces are written to logs/hallucination_traces.jsonl for analysis.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 # ── Trace file ────────────────────────────────────────────────────────────────
 
 _ROOT = Path(__file__).resolve().parents[5]   # project root
-_TRACE_FILE = _ROOT / "eval" / "hallucination_traces.jsonl"
+_TRACE_FILE = _ROOT / "logs" / "hallucination_traces.jsonl"
 _TRACE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -80,6 +80,25 @@ _SQL_KEYWORDS = {
     "unbounded", "current", "row", "fetch", "next", "only", "percent",
     "true", "false", "null", "integer", "varchar", "text", "float",
     "boolean", "timestamp", "interval", "array", "struct",
+    # Spark SQL / Databricks-specific functions
+    "collect_set", "collect_list", "array_agg", "approx_count_distinct",
+    "percentile", "percentile_approx", "explode", "explode_outer",
+    "posexplode", "flatten", "array_distinct", "array_sort", "array_union",
+    "array_intersect", "array_except", "array_contains", "array_size",
+    "size", "map", "map_keys", "map_values", "named_struct", "to_json",
+    "from_json", "parse_json", "schema_of_json", "get_json_object",
+    "json_tuple", "transform", "filter", "aggregate", "zip_with",
+    "forall", "exists", "element_at", "first", "last", "nth_value",
+    "lag", "lead", "cume_dist", "ntile", "percent_rank",
+    "date_trunc", "date_format", "date_add", "date_sub", "months_between",
+    "add_months", "next_day", "last_day", "trunc", "unix_timestamp",
+    "from_unixtime", "to_timestamp", "quarter", "weekofyear", "dayofweek",
+    "dayofyear", "hour", "minute", "second",
+    "if", "iff", "nvl2", "nullif", "decode", "greatest", "least",
+    "lpad", "rpad", "ltrim", "rtrim", "split", "regexp_extract",
+    "regexp_replace", "instr", "locate", "initcap", "base64", "unbase64",
+    "hash", "md5", "sha1", "sha2", "crc32", "uuid", "monotonically_increasing_id",
+    "spark_partition_id", "input_file_name", "current_user", "current_schema",
 }
 
 
@@ -158,13 +177,15 @@ def validate_schema(
     question: str = "",
     session_id: str = "",
     user_id: str = "",
+    extra_columns: Optional[list[str]] = None,
 ) -> tuple[bool, str]:
     """
     Check that the SQL only references columns that exist in the table schema.
 
-    Strategy: extract identifiers from the SELECT clause, WHERE clause,
-    GROUP BY, ORDER BY, and JOIN ON conditions, then check each against the
-    known columns list. SQL keywords and the table name are excluded.
+    Parameters
+    ----------
+    extra_columns : additional columns from JOIN tables — these are valid and
+                    should not be flagged as hallucinations.
 
     Returns (is_valid, error_hint).
     """
@@ -172,12 +193,31 @@ def validate_schema(
         return True, ""   # can't validate without schema info
 
     known = {c.lower() for c in columns}
-    tname_parts = {p.lower() for p in re.split(r'[.\s]', table_name) if p}
+    if extra_columns:
+        known |= {c.lower() for c in extra_columns}
+
+    # All table-name parts are valid identifiers (catalog, schema, table)
+    all_table_parts: set[str] = set()
+    for tname in ([table_name] + list(re.split(r'[,\s]+', table_name))):
+        for p in re.split(r'[.\s]', tname):
+            if p:
+                all_table_parts.add(p.lower())
 
     clean = _strip_literals(sql)
 
-    # Extract identifiers only from column-bearing clauses
-    # SELECT … FROM, WHERE, GROUP BY, ORDER BY, HAVING, ON
+    # ── Collect SELECT aliases so they are not flagged in ORDER BY / HAVING ──
+    # e.g. SELECT SUM(Units_Sold) AS total_units_sold … ORDER BY total_units_sold
+    # The alias is valid in ORDER BY even though it's not a column name.
+    select_aliases: set[str] = set()
+    for alias in re.findall(
+        r'\bAS\s+([a-zA-Z_][a-zA-Z0-9_]*)\b', clean, re.IGNORECASE
+    ):
+        select_aliases.add(alias.lower())
+
+    # ── Also allow table-qualified references: t.col or alias.col ────────────
+    # Strip table-qualifier prefixes so "s.Units_Sold" → check "units_sold" only
+    clean_no_qual = re.sub(r'\b[a-zA-Z_]\w*\.(?=[a-zA-Z_])', '', clean)
+
     clause_patterns = [
         r'\bSELECT\b(.*?)\bFROM\b',
         r'\bWHERE\b(.*?)(?:\bGROUP\b|\bORDER\b|\bHAVING\b|\bLIMIT\b|$)',
@@ -189,17 +229,20 @@ def validate_schema(
 
     candidate_tokens: set[str] = set()
     for pat in clause_patterns:
-        for segment in re.findall(pat, clean, re.IGNORECASE | re.DOTALL):
+        for segment in re.findall(pat, clean_no_qual, re.IGNORECASE | re.DOTALL):
+            # Strip AS aliases before extracting tokens
+            segment = re.sub(r'\bAS\s+[a-zA-Z_][a-zA-Z0-9_]*', '', segment, flags=re.IGNORECASE)
             for tok in re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', segment):
                 candidate_tokens.add(tok.lower())
 
     unknown = [
         tok for tok in candidate_tokens
-        if len(tok) > 1                          # skip single-char noise (_, t, n …)
+        if len(tok) > 1
         and tok not in _SQL_KEYWORDS
-        and tok not in tname_parts
+        and tok not in all_table_parts
         and tok not in known
-        and _is_genuine_unknown(tok, known)      # skip verb forms / column+verb compounds
+        and tok not in select_aliases          # ← aliases reused in ORDER BY / HAVING
+        and _is_genuine_unknown(tok, known)
     ]
 
     if unknown:
@@ -215,7 +258,156 @@ def validate_schema(
     return True, ""
 
 
-# ── 2. Logical validation ─────────────────────────────────────────────────────
+# ── 2. Column-semantic validation (embedding-based, no LLM call) ──────────────
+
+# Question words that are never metric/dimension terms
+_METRIC_STOPWORDS = {
+    "what", "is", "are", "the", "show", "give", "find", "get", "me",
+    "calculate", "compute", "tell", "list", "display", "return", "fetch",
+    "how", "many", "much", "for", "of", "in", "by", "per", "each", "all",
+    "a", "an", "to", "from", "with", "and", "or", "not", "where", "when",
+    "which", "who", "that", "this", "these", "those", "between", "above",
+    "below", "than", "more", "less", "top", "bottom", "please", "can", "you",
+    "do", "does", "did", "was", "were", "has", "have", "had", "will", "would",
+    "could", "should", "my", "our", "their", "its", "am", "be", "been",
+}
+
+# Similarity thresholds
+_SEMANTIC_MATCH_THRESHOLD  = 0.72   # question term → best schema column
+_SEMANTIC_USAGE_THRESHOLD  = 0.55   # question term → column actually used in SQL
+_SEMANTIC_MISMATCH_GAP     = 0.20   # best_col_sim - used_col_sim must exceed this to flag
+
+
+def _extract_metric_terms(question: str) -> list[str]:
+    """
+    Pull candidate metric/dimension words from the question.
+
+    e.g. "what is the total profit of LOCTITE 243 by region"
+         → ["total", "profit", "loctite", "region"]  (stopwords removed)
+    """
+    words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9_]*\b', question.lower())
+    return [w for w in words if w not in _METRIC_STOPWORDS and len(w) > 2]
+
+
+def _extract_select_col_refs(sql: str) -> list[str]:
+    """
+    Return lowercased identifiers referenced in the SELECT clause
+    (after stripping AS aliases and SQL keywords).
+    """
+    m = re.search(r'\bSELECT\b(.*?)\bFROM\b', sql, re.IGNORECASE | re.DOTALL)
+    if not m:
+        return []
+    clause = re.sub(r'\bAS\s+\w+', '', m.group(1), flags=re.IGNORECASE)
+    tokens = re.findall(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b', clause)
+    return [t.lower() for t in tokens if t.lower() not in _SQL_KEYWORDS]
+
+
+# Lazy module-level embedding model (shared with other callers in this process)
+_sem_model = None
+_sem_model_lock = __import__("threading").Lock()
+
+
+def _get_sem_model():
+    global _sem_model
+    if _sem_model is None:
+        with _sem_model_lock:
+            if _sem_model is None:
+                try:
+                    from sentence_transformers import SentenceTransformer
+                    _sem_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+                except Exception:
+                    pass
+    return _sem_model
+
+
+def validate_column_semantics(
+    question: str,
+    sql: str,
+    columns: list[str],
+    table_name: str,
+    session_id: str = "",
+    user_id: str = "",
+) -> tuple[bool, str]:
+    """
+    Embedding-based post-generation sanity check.
+
+    For each key term extracted from the question, find the most semantically
+    similar column in the schema.  Then check whether the SQL SELECT clause
+    actually references that column.  If there is a high-confidence mismatch
+    (e.g. question says "profit" → best column is "Profit", but SQL uses
+    "Price"), return an actionable correction hint.
+
+    Returns (is_valid, error_hint).
+    No-op (returns True) when embeddings are unavailable.
+    """
+    if not columns:
+        return True, ""
+
+    model = _get_sem_model()
+    if model is None:
+        return True, ""   # embeddings unavailable — skip silently
+
+    try:
+        import numpy as np
+
+        col_lower   = [c.lower() for c in columns]
+        col_embs    = model.encode(col_lower, normalize_embeddings=True, show_progress_bar=False)
+
+        metric_terms = _extract_metric_terms(question)
+        if not metric_terms:
+            return True, ""
+
+        term_embs = model.encode(metric_terms, normalize_embeddings=True, show_progress_bar=False)
+
+        used_refs  = set(_extract_select_col_refs(sql))
+
+        hints: list[str] = []
+
+        for term, t_emb in zip(metric_terms, term_embs):
+            sims = np.dot(col_embs, t_emb)           # cosine sim to each column
+            best_idx  = int(np.argmax(sims))
+            best_sim  = float(sims[best_idx])
+            best_col  = col_lower[best_idx]
+
+            # Only act when we have a confident best column for this term
+            if best_sim < _SEMANTIC_MATCH_THRESHOLD:
+                continue
+
+            # Check if any used ref is close enough to the best column
+            if best_col in used_refs:
+                continue   # exact match — all good
+
+            # Find the highest sim of the actually-used columns to this term
+            used_sims = [float(sims[col_lower.index(r)]) for r in used_refs if r in col_lower]
+            top_used_sim = max(used_sims) if used_sims else 0.0
+
+            # Flag only when the gap is significant enough to be a real mismatch
+            if best_sim - top_used_sim >= _SEMANTIC_MISMATCH_GAP:
+                canonical_col = columns[best_idx]   # original casing
+                hints.append(
+                    f"The question asks for '{term}' which maps to column "
+                    f"'{canonical_col}' (similarity {best_sim:.2f}), but the SQL "
+                    f"does not use it. Use '{canonical_col}' directly instead of "
+                    f"computing it from other columns."
+                )
+                _trace("semantic_mismatch", question, sql,
+                       f"term='{term}' best_col='{canonical_col}' top_used_sim={top_used_sim:.2f}",
+                       session_id, user_id)
+
+        if hints:
+            hint = (
+                "Column semantic mismatch detected:\n" + "\n".join(f"- {h}" for h in hints) +
+                f"\nValid columns: {', '.join(columns)}. Rewrite the SQL using the correct columns."
+            )
+            return False, hint
+
+        return True, ""
+
+    except Exception:
+        return True, ""   # never block on unexpected errors
+
+
+# ── 3. Logical validation ─────────────────────────────────────────────────────
 
 _LOGICAL_PROMPT = """\
 You are a SQL review assistant. Given a user question and a generated SQL query, \
@@ -358,13 +550,14 @@ def diagnose_empty_result(
         ]
         if sampled:
             hint_parts.append(
-                f"The value you searched for does not exist in the database. "
-                f"Here are some example values that do exist — {'; '.join(sampled)}."
+                f"The filter condition did not match any rows. "
+                f"Here are some example values that exist in the filtered column(s) — {'; '.join(sampled)}. "
+                f"Try using one of these values or broaden the filter."
             )
         else:
             hint_parts.append(
                 f"The filter condition did not match any of the {total:,} rows in the table. "
-                "Check that the name or value is spelled correctly."
+                "Try broadening the filter or removing it."
             )
 
         hint = " ".join(hint_parts)
@@ -385,24 +578,42 @@ def store_feedback(
     question: str,
     sql: Optional[str],
     final_answer: Optional[str],
-    rating: str,          # "good" | "bad"
+    rating: str,                        # "good" | "bad"
     comment: str = "",
     session_id: str = "",
     user_id: str = "",
+    route: str = "",                    # "sql" | "rag" | "both" | "schema"
+    history: Optional[list] = None,     # last N conversation turns at time of rating
 ) -> None:
-    """Append a user feedback record to eval/user_feedback.jsonl."""
+    """
+    Append a user feedback record to eval/user_feedback.jsonl.
+
+    Stores both the immediate question/answer AND the conversation history
+    snapshot so that analysts can reconstruct the full context when
+    investigating bad ratings — especially multi-turn misunderstandings.
+
+    Feedback vs. multi-turn conversation
+    -------------------------------------
+    history   — the running conversation context sent to the LLM on every
+                 query turn; it is ephemeral and lives in the frontend.
+    feedback  — a permanent, immutable rating of one specific answer;
+                 the history snapshot here is a frozen copy at rating time,
+                 not the live conversation state.
+    """
     try:
         _FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
         record = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "message_id": message_id,
-            "session_id": session_id,
-            "user_id": user_id,
-            "question": question,
-            "sql": sql,
+            "timestamp":    datetime.utcnow().isoformat(),
+            "message_id":   message_id,
+            "session_id":   session_id,
+            "user_id":      user_id,
+            "route":        route,
+            "question":     question,
+            "history_snapshot": (history or [])[-6:],  # last 3 turns (user+assistant pairs)
+            "sql":          sql,
             "final_answer": final_answer,
-            "rating": rating,
-            "comment": comment,
+            "rating":       rating,
+            "comment":      comment,
         }
         with open(_FEEDBACK_FILE, "a") as f:
             f.write(json.dumps(record) + "\n")
@@ -466,13 +677,22 @@ def validate_query_values(
 
     HIGH_PRIORITY = {"PERSON", "ORG", "GPE"}
     # Pattern for values that are purely numeric/date/time — skip index check
-    _NUMERIC_RE = re.compile(r'^[\d\s\-/:.,]+$')
+    _NUMERIC_RE  = re.compile(r'^[\d\s\-/:.,]+$')
+    # For non-PERSON entities (ORG/GPE), require a digit to avoid false rejections
+    # on brand-only names like "Loctite" that appear as LIKE patterns in SQL.
+    # PERSON names (e.g. "Emma Liu") never have digits but must still be checked.
+    _HAS_DIGIT_RE = re.compile(r'\d')
 
     candidates = extract_filter_candidates(question)
     high = [
         c for c in candidates
         if (c["entity_type"] in HIGH_PRIORITY or c["method"] == "quoted")
-        and not _NUMERIC_RE.match(c["text"])   # skip dates, numbers, timestamps
+        and not _NUMERIC_RE.match(c["text"])        # skip dates, numbers, timestamps
+        and (
+            c["entity_type"] == "PERSON"            # always check person names
+            or c["method"] == "quoted"              # always check explicitly quoted values
+            or _HAS_DIGIT_RE.search(c["text"])      # ORG/GPE: require a digit (skip brand-only)
+        )
     ]
     if not high:
         return True, ""
@@ -513,12 +733,15 @@ def validate_sql_values(
     if not literals:
         return True, ""
 
-    _NUMERIC_RE = re.compile(r'^[\d\s\-/:.,]+$')
+    _NUMERIC_RE  = re.compile(r'^[\d\s\-/:.,]+$')
+    _WILDCARD_RE = re.compile(r'[%_]')   # SQL LIKE wildcards — not exact values
     not_found_msgs = []
     for literal in literals:
         if len(literal) < 2:
             continue
-        if _NUMERIC_RE.match(literal):   # skip dates, numbers, timestamps
+        if _NUMERIC_RE.match(literal):      # skip dates, numbers, timestamps
+            continue
+        if _WILDCARD_RE.search(literal):    # skip LIKE patterns e.g. 'Loctite%'
             continue
         result = value_index.search_value(literal, table=table_name or None)
         if not result.found:

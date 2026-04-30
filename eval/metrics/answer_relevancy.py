@@ -1,8 +1,5 @@
 """Answer relevancy metric for RAG evaluation.
 
-WrenAI's version extracts table.column pairs from actual and expected *SQL*
-via the Wren Engine analysis API and measures their overlap.
-
 Here there is no SQL — actual_output and expected_output are free-text answers.
 We measure relevancy as the fraction of tokens in the actual answer that also
 appear in the expected answer (precision-oriented token overlap), which asks:

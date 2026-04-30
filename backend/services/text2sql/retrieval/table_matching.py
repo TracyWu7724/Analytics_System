@@ -131,7 +131,10 @@ def get_all_available_tables(service: Any) -> list[dict]:
             "source":      "databricks",
         })
 
-    db_cache.set_table_list(table_list, include_sql_server=True, ttl=300)
+    # Only cache if we actually got tables — never cache an empty list,
+    # as an empty result is likely a transient Databricks connectivity issue.
+    if table_list:
+        db_cache.set_table_list(table_list, include_sql_server=True, ttl=300)
     return table_list
 
 
@@ -151,12 +154,21 @@ def get_relevant_tables(
     # Schema + history boost from inverted index (0 if index not ready)
     schema_boost: dict = {}
     history_boost: dict = {}
+    col_emb_boost: dict = {}
     try:
         from ..indexing.inverted_index import get_inverted_index
         idx = get_inverted_index()
         if idx is not None and idx.is_ready():
             schema_boost  = idx.score_tables_by_schema(question)
             history_boost = idx.score_tables_by_history(question)
+    except Exception:
+        pass
+
+    try:
+        from ..indexing.column_embedding_index import get_column_embedding_index
+        col_idx = get_column_embedding_index()
+        if col_idx.is_ready():
+            col_emb_boost = col_idx.score_tables(question)
     except Exception:
         pass
 
@@ -167,6 +179,7 @@ def get_relevant_tables(
         score = _score(keywords, table["full_name"], table["table_name"], schema)
         score += schema_boost.get(table["full_name"], 0.0)
         score += history_boost.get(table["full_name"], 0.0)
+        score += col_emb_boost.get(table["full_name"], 0.0)
         scored.append({**table, "score": score})
     scored.sort(key=lambda t: t["score"], reverse=True)
     return scored[:limit]
