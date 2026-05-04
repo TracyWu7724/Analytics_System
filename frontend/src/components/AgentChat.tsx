@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Settings, Upload, FileText, X, ChevronDown, ExternalLink, Zap, Database, BookOpen, LogIn, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, Database, BookOpen, LogIn, ThumbsUp, ThumbsDown } from 'lucide-react';
 import UserMenu from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
 import { QueryOutput } from './Result';
@@ -51,7 +51,6 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
   const [showDebugPanel, setShowDebugPanel] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
   const [kbUpdateMessage, setKbUpdateMessage] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel || 'gpt-4o');
   const [availableModels, setAvailableModels] = useState<{ id: string; display_name: string; provider: string; available: boolean }[]>([]);
@@ -59,7 +58,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const lastProcessedQuery = useRef<string>('');
 
   useEffect(() => {
@@ -248,31 +247,6 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
     if (ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'; }
   }, [inputValue]);
 
-  // ── PDF upload (knowledge base) ───────────────────────────────────────────
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      alert('Only PDF files are supported for knowledge base updates.');
-      return;
-    }
-    setIsUploading(true);
-    setKbUpdateMessage(null);
-    try {
-      const result = await ApiService.uploadPdf(file);
-      if (result.success) {
-        setKbUpdateMessage(
-          `Knowledge base updated: "${result.filename}" — ${result.chunks_added} chunks added (${result.total_vectors} total vectors)`
-        );
-      } else {
-        alert(`PDF indexing failed: ${result.error}`);
-      }
-    } catch { alert('Upload failed. Please try again.'); }
-    finally {
-      setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -503,21 +477,10 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                 onChange={e => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={user ? "Ask me anything — data, knowledge, or both..." : "Please sign in to ask a question..."}
-                className="w-full px-4 py-3 pr-12 border border-gray-200 rounded-xl resize-none focus:outline-none focus:ring-2 focus:border-transparent disabled:cursor-not-allowed disabled:bg-gray-50"
+                className="w-full px-4 py-3 border border-gray-200 rounded-xl resize-none focus:outline-none focus:ring-2 focus:border-transparent disabled:cursor-not-allowed disabled:bg-gray-50"
                 style={{ minHeight: '48px', maxHeight: '120px' }}
                 disabled={isLoading || !user}
               />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isLoading || isUploading}
-                className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-gray-500 hover:text-blue-600 transition-colors disabled:opacity-50"
-                title="Upload PDF to update knowledge base"
-              >
-                {isUploading
-                  ? <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600" />
-                  : <Upload className="w-5 h-5" />}
-              </button>
-              <input ref={fileInputRef} type="file" onChange={handleFileChange} accept=".pdf" className="hidden" />
             </div>
             {!user && (
               <div className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg flex-shrink-0">

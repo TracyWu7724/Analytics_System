@@ -848,11 +848,11 @@ async def upload_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
 
     try:
+        from backend.services.text2sql.db.upload_service import UploadService
+        from backend.services.text2sql.retrieval.table_matching import invalidate_table_cache
+    except ImportError:
         from ..text2sql.db.upload_service import UploadService
         from ..text2sql.retrieval.table_matching import invalidate_table_cache
-    except ImportError:
-        from text2sql.db.upload_service import UploadService
-        from text2sql.retrieval.table_matching import invalidate_table_cache
 
     upload_service = UploadService(_data_service)
 
@@ -896,9 +896,9 @@ async def upload_pdf(file: UploadFile = File(...)):
             tmp.flush()
 
             try:
-                from ..rag.indexing.incremental import IncrementalIndexer
+                from backend.services.rag.indexing.incremental import IncrementalIndexer
             except ImportError:
-                from rag.indexing.incremental import IncrementalIndexer
+                from ..rag.indexing.incremental import IncrementalIndexer
 
             indexer = IncrementalIndexer(
                 embed_dir=_embed_dir,
