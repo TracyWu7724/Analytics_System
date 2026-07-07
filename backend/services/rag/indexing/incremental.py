@@ -49,10 +49,14 @@ class IncrementalIndexer:
         embed_dir: str,
         embed_model_name: str = "BAAI/bge-base-en-v1.5",
         parser_strategy: str = "fast",
+        kg=None,
+        kg_path: str = "",
     ):
         self.embed_dir = embed_dir
         self.embed_model_name = embed_model_name
         self.parser_strategy = parser_strategy
+        self.kg = kg
+        self.kg_path = kg_path
         self._key = _model_to_key(embed_model_name)
 
         # Paths that match the naming convention used by _resolve_rag_paths in agent.py
@@ -138,6 +142,15 @@ class IncrementalIndexer:
                     if entry["id"] not in existing_ids:
                         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
                         written += 1
+
+            # 7. Trigger async KG build for newly added chunks
+            if self.kg is not None and self.kg_path and written > 0:
+                try:
+                    from ..kg.kg_builder import KGBuilder
+                    builder = KGBuilder(self.kg, self.kg_path)
+                    builder.build_async(new_entries[:written])
+                except Exception:
+                    pass  # KG build failure must never fail the upload
 
             return {
                 "success": True,

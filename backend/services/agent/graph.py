@@ -112,6 +112,7 @@ def build_agent(
     final_k: int = 5,
     value_index=None,
     product_index=None,
+    kg=None,
 ):
     """
     Compile and return the LangGraph agent.
@@ -131,6 +132,7 @@ def build_agent(
         initial_k=initial_k,
         final_k=final_k,
         product_index=product_index,
+        kg=kg,
     )
 
     # ── Build graph ──────────────────────────────────────────────────────────

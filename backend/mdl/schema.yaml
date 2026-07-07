@@ -1,0 +1,64 @@
+# MDL (Metric Definition Layer) — Analytics System semantic layer
+# Defines metrics, join relationships, synonyms, and column descriptions.
+# This file is hot-reloadable; edit and the next query picks up changes.
+
+version: "1"
+
+metrics:
+  - name: Revenue
+    description: Total net sales amount
+    expression: "SUM(net_sales)"
+    synonyms: ["revenue", "sales", "total sales", "net revenue", "net sales", "income"]
+
+  - name: Usage
+    description: Total units sold
+    expression: "SUM(units_sold)"
+    synonyms: ["usage", "units", "units sold", "volume", "quantity sold", "qty sold"]
+
+  - name: Profit
+    description: Revenue minus cost of goods sold
+    expression: "SUM(net_sales) - SUM(cogs)"
+    synonyms: ["profit", "gross profit", "margin amount", "net profit"]
+
+  - name: Margin
+    description: Gross margin percentage
+    expression: "(SUM(net_sales) - SUM(cogs)) / NULLIF(SUM(net_sales), 0) * 100"
+    synonyms: ["margin", "gross margin", "profit margin", "margin %", "margin percent"]
+
+joins:
+  - left_table: product
+    right_table: sales
+    on: "product.product_id = sales.product_id"
+    description: "Join product details with sales transactions"
+
+  - left_table: sales
+    right_table: product
+    on: "sales.product_id = product.product_id"
+    description: "Join sales with product info"
+
+column_descriptions:
+  sales:
+    net_sales: "Net revenue after discounts and returns (USD)"
+    units_sold: "Number of units sold in the transaction"
+    cogs: "Cost of goods sold (USD)"
+    product_id: "Foreign key to product table"
+    order_date: "Date the order was placed"
+    region: "Geographic sales region"
+    channel: "Sales channel (direct, online, partner)"
+
+  product:
+    product_id: "Primary key — unique product identifier"
+    product_name: "Full product name including variant"
+    category: "Product category"
+    brand: "Brand name"
+    sku: "Stock-keeping unit code"
+
+value_constraints:
+  sales.channel: ["direct", "online", "partner", "distributor"]
+  sales.region:  ["north", "south", "east", "west", "international"]
+
+synonyms:
+  product: ["item", "sku", "part", "goods"]
+  sales:   ["transactions", "orders", "revenue data", "sales data"]
+  region:  ["territory", "area", "zone", "geography", "geo"]
+  channel: ["route to market", "rtm", "distribution channel"]

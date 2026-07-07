@@ -64,17 +64,25 @@ try:
     from ..agent.graph import build_agent
     from ..agent.tools.rag_tool import run_rag
     from ..text2sql.generation.llm_registry import list_llm_models
+    from ..text2sql.indexing.hybrid_value_index import init_hybrid_index
     from ..text2sql.indexing.inverted_index import init_inverted_index
     from ..text2sql.indexing.product_index import init_product_index
     from ..text2sql.indexing.column_embedding_index import get_column_embedding_index
+    from ..text2sql.mdl.mdl_loader import load_mdl
+    from ..rag.kg.knowledge_graph import KnowledgeGraph
+    from ..rag.kg.kg_builder import KGBuilder
 except ImportError:
     from db.databricks_service import DatabricksService
     from agent.graph import build_agent
     from agent.tools.rag_tool import run_rag
     from generation.llm_registry import list_llm_models
+    from indexing.hybrid_value_index import init_hybrid_index
     from indexing.inverted_index import init_inverted_index
     from indexing.product_index import init_product_index
     from indexing.column_embedding_index import get_column_embedding_index
+    from mdl_loader import load_mdl
+    from rag.kg.knowledge_graph import KnowledgeGraph
+    from rag.kg.kg_builder import KGBuilder
 
 # ── App setup ────────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -127,9 +135,9 @@ def _warm_schema_cache():
 
 _warm_schema_cache()
 
-# Inverted index — loaded from disk or built in background thread.
-# sql_node falls back gracefully until ready (is_ready() returns False while building).
-_value_index = init_inverted_index(
+# Value index — hybrid wrapper over InvertedIndex with canonicalization + profiling.
+# Falls back gracefully until ready (is_ready() returns False while building).
+_value_index = init_hybrid_index(
     _data_service,
     index_dir=os.getenv("INDEX_DIR", ""),
     embed_model_name=os.getenv("RAG_EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
@@ -169,6 +177,23 @@ if _rag_configured:
 else:
     print("RAG not configured — agent will SQL-only until RAG_EMBED_DIR is set")
 
+# MDL semantic layer — loaded once at startup; hot-reloadable via /mdl/reload
+_mdl = load_mdl()
+if _mdl:
+    print(f"MDL loaded: {len(_mdl.metrics)} metrics, {len(_mdl.joins)} joins")
+else:
+    print("MDL not found — SQL generation will proceed without semantic layer")
+
+# Knowledge Graph — load from disk if available, build async otherwise
+_KG_PATH = os.path.join(os.getenv("INDEX_DIR", "") or str(
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "index"
+), "knowledge_graph.json")
+_kg = KnowledgeGraph()
+if not _kg.load(_KG_PATH):
+    print("KG not found — will be built when PDFs are uploaded")
+else:
+    print(f"KG loaded: {_kg.stats()}")
+
 # Build the compiled LangGraph agent once at startup
 _agent = build_agent(
     data_service=_data_service,
@@ -178,6 +203,7 @@ _agent = build_agent(
     reranker_model_name=_RERANKER_MODEL,
     value_index=_value_index,
     product_index=_product_index,
+    kg=_kg,
 )
 
 
@@ -903,6 +929,8 @@ async def upload_pdf(file: UploadFile = File(...)):
             indexer = IncrementalIndexer(
                 embed_dir=_embed_dir,
                 embed_model_name=_EMBED_MODEL,
+                kg=_kg,
+                kg_path=_KG_PATH,
             )
             result = await asyncio.to_thread(indexer.add_pdf, tmp.name, file.filename)
 
@@ -921,3 +949,44 @@ async def upload_pdf(file: UploadFile = File(...)):
                 os.unlink(tmp.name)
             except OSError:
                 pass
+
+
+# ── MDL endpoints ─────────────────────────────────────────────────────────────
+
+@app.get("/mdl/config")
+async def mdl_config():
+    """Return the current MDL semantic layer configuration."""
+    mdl = load_mdl()
+    if mdl is None:
+        return {"status": "not_configured"}
+    return {
+        "status": "ok",
+        "version": mdl.version,
+        "metrics": [{"name": m.name, "expression": m.expression, "synonyms": m.synonyms} for m in mdl.metrics],
+        "joins": [{"left": j.left_table, "right": j.right_table, "on": j.on} for j in mdl.joins],
+    }
+
+
+@app.post("/mdl/reload")
+async def mdl_reload():
+    """Force a reload of the MDL schema.yaml from disk."""
+    global _mdl
+    try:
+        from ..text2sql.mdl.mdl_loader import _cache_mtime
+        import backend.services.text2sql.mdl.mdl_loader as _mdl_mod
+        _mdl_mod._cache_config = None
+        _mdl_mod._cache_mtime = 0.0
+        _mdl = load_mdl()
+        if _mdl:
+            return {"status": "reloaded", "metrics": len(_mdl.metrics), "joins": len(_mdl.joins)}
+        return {"status": "not_found"}
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
+# ── KG endpoints ──────────────────────────────────────────────────────────────
+
+@app.get("/kg/stats")
+async def kg_stats():
+    """Return knowledge graph statistics."""
+    return {"status": "ok", **_kg.stats()}

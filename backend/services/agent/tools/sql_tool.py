@@ -233,6 +233,7 @@ def generate_sql_query(
     history: Optional[list[dict]] = None,
     product_hints: Optional[dict] = None,
     extra_tables: Optional[dict[str, list[str]]] = None,
+    mdl_context: Optional[str] = None,
 ) -> str:
     """
     Generate (or fix) a SQL query for Databricks.
@@ -256,7 +257,7 @@ def generate_sql_query(
     raw = generate_sql(
         q, table_name, columns, custom_limit, llm_model,
         history=history, product_hints=product_hints,
-        extra_tables=extra_tables,
+        extra_tables=extra_tables, mdl_context=mdl_context,
     )
     return clean_sql_query(raw)
 

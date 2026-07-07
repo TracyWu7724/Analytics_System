@@ -1,41 +1,13 @@
-import React, { useState } from 'react';
-import { ApiService } from '../services/api';
-import { RefreshCw, AlertCircle, CheckCircle, XCircle, Database, Cpu, BookOpen } from 'lucide-react';
+import { RefreshCw, XCircle, CheckCircle, Database, Cpu, BookOpen } from "lucide-react";
+import DiagRow from "./DiagRow";
 
-interface DebugPanelProps {
-  onClose: () => void;
+interface DiagnosticsSectionProps {
+  data: any;
+  loading: boolean;
+  onRun: () => void;
 }
 
-// ── Diagnostics section ────────────────────────────────────────────────────
-
-type DiagStatus = 'ok' | 'error' | 'misconfigured' | 'not_configured' | 'index_missing';
-
-function StatusDot({ status }: { status: DiagStatus | boolean }) {
-  const ok = status === 'ok' || status === true;
-  const warn = status === 'misconfigured' || status === 'not_configured' || status === 'index_missing';
-  if (ok) return <CheckCircle size={14} className="text-green-500 shrink-0" />;
-  if (warn) return <AlertCircle size={14} className="text-amber-400 shrink-0" />;
-  return <XCircle size={14} className="text-red-500 shrink-0" />;
-}
-
-function DiagRow({ icon, label, status, detail }: {
-  icon: React.ReactNode; label: string; status: DiagStatus | boolean; detail?: string;
-}) {
-  return (
-    <div className="flex items-start gap-3 py-3 border-b last:border-0">
-      <div className="mt-0.5 text-gray-400">{icon}</div>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-gray-700">{label}</span>
-          <StatusDot status={status} />
-        </div>
-        {detail && <p className="text-xs text-gray-500 mt-0.5 truncate">{detail}</p>}
-      </div>
-    </div>
-  );
-}
-
-function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: boolean; onRun: () => void }) {
+export function DiagnosticsSection({ data, loading, onRun }: DiagnosticsSectionProps) {
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-gray-400">
@@ -80,21 +52,21 @@ function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: bool
       <DiagRow
         icon={<Database size={15} />}
         label="Databricks"
-        status={db.status ?? 'error'}
+        status={db.status ?? "error"}
         detail={db.message}
       />
 
       <DiagRow
         icon={<BookOpen size={15} />}
         label="Knowledge Base (RAG)"
-        status={kb.status ?? 'not_configured'}
+        status={kb.status ?? "not_configured"}
         detail={
-          kb.status === 'ok'
-            ? `${kb.chunk_count ?? 0} chunks · ${kb.embed_model ?? ''}`
-            : kb.status === 'not_configured'
-            ? 'RAG_EMBED_DIR not set'
-            : kb.status === 'index_missing'
-            ? 'FAISS index missing — re-index PDFs'
+          kb.status === "ok"
+            ? `${kb.chunk_count ?? 0} chunks · ${kb.embed_model ?? ""}`
+            : kb.status === "not_configured"
+            ? "RAG_EMBED_DIR not set"
+            : kb.status === "index_missing"
+            ? "FAISS index missing — re-index PDFs"
             : undefined
         }
       />
@@ -122,8 +94,8 @@ function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: bool
             </div>
             <div className="flex justify-between">
               <span>Status</span>
-              <span className={`font-medium ${kb.inverted_index.ready ? 'text-green-600' : 'text-amber-500'}`}>
-                {kb.inverted_index.ready ? 'Ready' : 'Building…'}
+              <span className={`font-medium ${kb.inverted_index.ready ? "text-green-600" : "text-amber-500"}`}>
+                {kb.inverted_index.ready ? "Ready" : "Building…"}
               </span>
             </div>
           </div>
@@ -162,44 +134,3 @@ function DiagnosticsSection({ data, loading, onRun }: { data: any; loading: bool
     </div>
   );
 }
-
-// ── Main panel ─────────────────────────────────────────────────────────────
-
-export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
-  const [diagData, setDiagData] = useState<any>(null);
-  const [diagLoading, setDiagLoading] = useState(false);
-
-  const runDiag = async () => {
-    setDiagLoading(true);
-    const data = await ApiService.getDiagnostics();
-    setDiagData(data);
-    setDiagLoading(false);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 overflow-hidden">
-      <div className="bg-white rounded-xl shadow-xl flex flex-col w-[520px] max-h-[80vh] overflow-hidden">
-
-        <div className="flex items-center justify-between px-5 py-4 border-b">
-          <h2 className="font-semibold text-gray-800 text-sm">System Diagnostics</h2>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={runDiag}
-              disabled={diagLoading}
-              className="p-1.5 rounded hover:bg-gray-100 text-gray-500 disabled:opacity-40"
-              title="Refresh"
-            >
-              <RefreshCw size={14} className={diagLoading ? 'animate-spin' : ''} />
-            </button>
-            <button onClick={onClose} className="p-1.5 rounded hover:bg-gray-100 text-gray-500 text-lg leading-none">×</button>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-5">
-          <DiagnosticsSection data={diagData} loading={diagLoading} onRun={runDiag} />
-        </div>
-
-      </div>
-    </div>
-  );
-};

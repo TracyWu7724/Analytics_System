@@ -1,5 +1,5 @@
 """
-state.py — shared AgentState for the LangGraph decision agent.
+state.py — shared AgentState for the LangGraph agent.
 
 Every node reads and writes this dict.  Fields are Optional so nodes can
 be skipped cleanly when only one pipeline is needed.
@@ -43,6 +43,10 @@ class AgentState(TypedDict):
     rag_chunks: Optional[list[dict]]  # retrieved context chunks
     rag_error: Optional[str]
     rag_verification: Optional[dict]  # {"passed": bool, "failed_layer": int, "layers": [...]}
+
+    # ── MDL / semantic layer ─────────────────────────────────────────────────
+    mdl_context: Optional[str]              # injected MDL block for SQL prompt
+    mdl_metrics_referenced: Optional[list[str]]  # metric names detected in question
 
     # ── Output ───────────────────────────────────────────────────────────────
     final_answer: Optional[str]

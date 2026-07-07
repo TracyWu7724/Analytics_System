@@ -1,16 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, Database, BookOpen, LogIn, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown } from 'lucide-react';
 import UserMenu from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
+import { useChat } from '../hooks/useChat';
+import { useLlmModels } from '../hooks/useLlmModels';
 import { QueryOutput } from './Result';
 import Sidebar from './Sidebar';
-import { DebugPanel } from './DebugPanel';
-import { ApiService } from '../services/api';
-import { sessionHistoryService } from '../services/queryHistoryService';
+import { DebugPanel } from './debug/DebugPanel';
+import { RouteBadge, ROUTE_META } from './chat/RouteBadge';
 import type { ChatMessage } from '../types/chat';
-import type { QueryResult } from '../types/database';
 
 interface AgentChatProps {
   initialQuery?: string;
@@ -18,234 +18,44 @@ interface AgentChatProps {
   sessionIdProp?: string;   // if provided, restore this session from history
 }
 
-// ── Route badge ───────────────────────────────────────────────────────────────
-const ROUTE_META: Record<string, { label: string; Icon: React.FC<any>; color: string; bg: string }> = {
-  sql:    { label: 'Text2SQL',              Icon: Database,  color: 'text-blue-700',   bg: 'bg-blue-50 border-blue-200' },
-  rag:    { label: 'Product Manuals RAG',   Icon: BookOpen,  color: 'text-green-700',  bg: 'bg-green-50 border-green-200' },
-  both:   { label: 'Text2SQL + RAG',        Icon: Zap,       color: 'text-purple-700', bg: 'bg-purple-50 border-purple-200' },
-};
-
-const RouteBadge: React.FC<{ route: string; reasoning?: string }> = ({ route, reasoning }) => {
-  const meta = ROUTE_META[route] ?? ROUTE_META.sql;
-  const { label, Icon, color, bg } = meta;
-  return (
-    <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${bg} ${color}`} title={reasoning}>
-      <Icon className="w-3 h-3" />
-      {label}
-    </div>
-  );
-};
-
 // ── Component ─────────────────────────────────────────────────────────────────
 const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmModel, sessionIdProp }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  // Stable session ID: restore from URL param, or generate a new one
-  const sessionId = useRef<string>(sessionIdProp ?? (
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
-  ));
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const { selectedModel, setSelectedModel, availableModels } = useLlmModels();
+  const {
+    messages,
+    isLoading,
+    loadingStep,
+    feedbackSent,
+    sessionId,
+    sendMessage,
+    sendFeedback,
+    dismissResult,
+  } = useChat({ initialQuery, initialLlmModel, sessionIdProp });
+
   const [inputValue, setInputValue] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState('');
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [kbUpdateMessage, setKbUpdateMessage] = useState<string | null>(null);
-  const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel || 'gpt-4o');
-  const [availableModels, setAvailableModels] = useState<{ id: string; display_name: string; provider: string; available: boolean }[]>([]);
-  const [feedbackSent, setFeedbackSent] = useState<Record<string, 'good' | 'bad'>>({});
-  const [retryMessage, setRetryMessage] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const lastProcessedQuery = useRef<string>('');
-
-  useEffect(() => {
-    ApiService.getLlmModels().then(({ models, default: defaultModel }) => {
-      setAvailableModels(models);
-      if (!initialLlmModel) setSelectedModel(defaultModel);
-    });
-  }, []);
-
-  // Restore session from history when a sessionIdProp is given.
-  // If the last assistant message was an error, drop it and queue a retry.
-  useEffect(() => {
-    if (!sessionIdProp || !user) return;
-    const stored = sessionHistoryService.getSession(user.username, sessionIdProp);
-    if (!stored || stored.messages.length === 0) return;
-
-    const msgs = stored.messages;
-    const lastAssistant = [...msgs].reverse().find(m => m.type === 'assistant' && !m.isLoading);
-    const lastUser = [...msgs].reverse().find(m => m.type === 'user');
-
-    if (lastAssistant?.error && lastUser) {
-      // Restore everything except the errored assistant reply, then retry
-      setMessages(msgs.filter(m => m.id !== lastAssistant.id));
-      setRetryMessage(lastUser.content);
-    } else {
-      setMessages(msgs);
-    }
-  }, [sessionIdProp, user?.username]);
-
-  // Fire the retry after the restored messages are committed to state
-  useEffect(() => {
-    if (!retryMessage) return;
-    setRetryMessage(null);
-    handleSendMessage(retryMessage);
-  }, [retryMessage]);
-
-  // Save session to history after each complete exchange (no loading messages)
-  useEffect(() => {
-    if (!user) return;
-    const hasLoading = messages.some(m => m.isLoading);
-    if (hasLoading) return;
-    const userMsgs = messages.filter(m => m.type === 'user');
-    if (userMsgs.length === 0) return;
-
-    sessionHistoryService.upsertSession({
-      session_id: sessionId.current,
-      user_id: user.username,
-      title: userMsgs[0].content.slice(0, 60),
-      messages,
-      created_at: new Date(userMsgs[0].timestamp ?? Date.now()).toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-    window.dispatchEvent(new Event('queryHistoryUpdated'));
-
-    // Stamp the session ID into the URL so a page refresh restores this conversation
-    if (!sessionIdProp) {
-      window.history.replaceState(null, '', `/agent?session=${encodeURIComponent(sessionId.current)}`);
-    }
-  }, [messages, user?.username]);
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-
-  useEffect(() => {
-    if (initialQuery && initialQuery !== lastProcessedQuery.current) {
-      lastProcessedQuery.current = initialQuery;
-      handleSendMessage(initialQuery);
-      setInputValue('');
-    }
-  }, [initialQuery]);
-
-
-  // ── Progress step labels ──────────────────────────────────────────────────
-  const STEP_LABELS: Record<string, string> = {
-    routing:    'Understanding context...',
-    columns:    'Retrieving table and columns...',
-    generating: 'Generating SQL...',
-    executing:  'Executing SQL...',
-    validating: 'Validating result...',
-    retrieving: 'Searching knowledge base...',
-  };
-
-  // ── Agent query (streaming) ───────────────────────────────────────────────
-  const executeAgentQuery = (question: string): Promise<any> => {
-    setLoadingStep('Understanding context...');
-
-    const history = messages
-      .filter(m => !m.isLoading)
-      .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }))
-      .slice(-10);
-
-    return new Promise((resolve) => {
-      ApiService.executeAgentQueryStream(
-        question,
-        selectedModel,
-        history,
-        sessionId.current,
-        (_step, label) => setLoadingStep(label),
-        (data) => { setLoadingStep(''); resolve(data); },
-        (errMsg) => { setLoadingStep(''); resolve({ error: errMsg }); },
-      );
-    });
-  };
-
-  const handleSendMessage = async (messageContent: string = inputValue) => {
-    if (!messageContent.trim()) return;
-
-    const userMessage: ChatMessage = {
-      id: Date.now().toString(),
-      type: 'user',
-      content: messageContent.trim(),
-      timestamp: new Date(),
-    };
-
-    setMessages(prev => [...prev, userMessage]);
-
-    const loadingMsg: ChatMessage = {
-      id: (Date.now() + 1).toString(),
-      type: 'assistant',
-      content: 'Thinking...',
-      timestamp: new Date(),
-      isLoading: true,
-    };
-    setMessages(prev => [...prev, loadingMsg]);
-    setInputValue('');
-    setIsLoading(true);
-
-    try {
-      const data = await executeAgentQuery(messageContent);
-
-      // Convert sql_rows to QueryResult format for the existing QueryOutput component
-      let results: QueryResult[] | undefined;
-      if (data.sql_rows && data.sql_rows.length > 0) {
-        const columns = Object.keys(data.sql_rows[0]);
-        results = [{ columns, values: data.sql_rows.map((row: Record<string, unknown>) => columns.map(c => row[c])) }];
-      }
-
-      // Determine display content
-      let content: string;
-      if (data.route === 'rag' || data.route === 'both') {
-        content = data.final_answer || (data.error ? `Error: ${data.error}` : 'No answer generated.');
-      } else if (data.error && !data.final_answer) {
-        content = 'I encountered an error processing your request.';
-      } else {
-        content = results && results[0].values.length > 0
-          ? `Found ${results[0].values.length} result${results[0].values.length !== 1 ? 's' : ''}.`
-          : data.final_answer || 'Query executed successfully.';
-      }
-
-      const assistantMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        type: 'assistant',
-        content,
-        timestamp: new Date(),
-        route: data.route as any,
-        route_reasoning: data.route_reasoning,
-        results,
-        sql_query: data.sql_query,
-        sql_rows: data.sql_rows,
-        rag_answer: data.final_answer ?? undefined,
-        rag_verification: data.rag_verification,
-        error: data.error,
-        trace_url: data.trace_url,
-      };
-
-      setMessages(prev => prev.slice(0, -1).concat(assistantMsg));
-    } catch (err) {
-      setMessages(prev => prev.slice(0, -1).concat({
-        id: (Date.now() + 1).toString(),
-        type: 'assistant',
-        content: 'An unexpected error occurred.',
-        timestamp: new Date(),
-        error: 'Connection failed',
-      }));
-    } finally {
-      setIsLoading(false);
-      setLoadingStep('');
-    }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }
-  };
 
   useEffect(() => {
     const ta = textareaRef.current;
     if (ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'; }
   }, [inputValue]);
+
+  const handleSendMessage = (messageContent: string = inputValue) => {
+    if (!messageContent.trim()) return;
+    setInputValue('');
+    sendMessage(messageContent);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(); }
+  };
 
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -366,9 +176,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                         results={message.results || []}
                         error={message.error || ''}
                         sql_query={message.sql_query}
-                        onClose={() => setMessages(prev => prev.map(m =>
-                          m.id === message.id ? { ...m, results: undefined, error: undefined, sql_query: undefined } : m
-                        ))}
+                        onClose={() => dismissResult(message.id!)}
                       />
                     </div>
                   )}
@@ -409,16 +217,14 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                               .slice(-6)
                               .map(m => ({ role: m.type === 'user' ? 'user' : 'assistant', content: m.content }));
 
-                            const submitFeedback = (rating: 'good' | 'bad') => {
-                              const msgId = message.id!;
-                              setFeedbackSent(prev => ({ ...prev, [msgId]: rating }));
-                              ApiService.submitFeedback({
-                                message_id:   msgId,
+                            const handleFeedback = (rating: 'good' | 'bad') => {
+                              sendFeedback({
+                                message_id:   message.id!,
                                 question:     pairedQuestion,
                                 sql:          message.sql_query ?? undefined,
                                 final_answer: message.content,
                                 rating,
-                                session_id:   sessionId.current,
+                                session_id:   sessionId,
                                 route:        message.route ?? undefined,
                                 history:      historySnapshot,
                               });
@@ -427,14 +233,14 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                             return (
                               <>
                           <button
-                            onClick={() => submitFeedback('good')}
+                            onClick={() => handleFeedback('good')}
                             className="p-1 rounded text-gray-400 hover:text-green-600 hover:bg-green-50 transition-colors"
                             title="Helpful"
                           >
                             <ThumbsUp className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => submitFeedback('bad')}
+                            onClick={() => handleFeedback('bad')}
                             className="p-1 rounded text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
                             title="Not helpful"
                           >

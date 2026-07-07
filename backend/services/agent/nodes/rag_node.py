@@ -25,6 +25,7 @@ def rag_node(
     initial_k: int = 10,
     final_k: int = 5,
     product_index=None,
+    kg=None,
 ) -> dict:
     """
     LangGraph node: run the RAG pipeline.
@@ -66,6 +67,7 @@ def rag_node(
         denied_sources=denied_rag_sources or [],
         product_index=product_index,
         retrieval_question=question,  # always use clean original for FAISS retrieval
+        kg=kg,
     )
 
     _progress(session_id, "validating", "Validating result...")

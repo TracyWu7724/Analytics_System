@@ -55,13 +55,23 @@ class HybridRetriever:
         initial_k: int = 10,
         final_k: int = 5,
         product_uuid: str | None = None,
+        kg=None,
     ) -> list[RetrievalResult]:
+        # KG-augmented query expansion
+        retrieval_query = query
+        if kg is not None:
+            try:
+                from .kg_retriever import KGRetriever
+                retrieval_query = KGRetriever(kg).build_expanded_query(query)
+            except Exception:
+                pass
+
         vector_hits = (
-            self.vector_store.search_within_product(product_uuid, query, k=initial_k)
+            self.vector_store.search_within_product(product_uuid, retrieval_query, k=initial_k)
             if product_uuid
-            else self.vector_store.search(query, k=initial_k)
+            else self.vector_store.search(retrieval_query, k=initial_k)
         )
-        keyword_hits = self.keyword_retriever.search(query, k=initial_k, product_uuid=product_uuid)
+        keyword_hits = self.keyword_retriever.search(retrieval_query, k=initial_k, product_uuid=product_uuid)
 
         merged: dict[str, RetrievalResult] = {}
         for result in [*vector_hits, *keyword_hits]:
@@ -78,10 +88,11 @@ class HybridRetriever:
         initial_k: int = 10,
         final_k: int = 5,
         product_uuid: str | None = None,
+        kg=None,
     ) -> list[RetrievalResult]:
         merged: dict[str, RetrievalResult] = {}
         for query_variant in prepared_query.all_queries():
-            for result in self.retrieve(query_variant, initial_k=initial_k, final_k=initial_k, product_uuid=product_uuid):
+            for result in self.retrieve(query_variant, initial_k=initial_k, final_k=initial_k, product_uuid=product_uuid, kg=kg):
                 key = result.metadata.get("id", result.text)
                 current = merged.get(key)
                 if current is None or result.score > current.score:

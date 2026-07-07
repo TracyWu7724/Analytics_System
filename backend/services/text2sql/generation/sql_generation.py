@@ -52,6 +52,7 @@ def generate_sql(
     history: list[dict] | None = None,
     product_hints: dict[str, str] | None = None,
     extra_tables: dict[str, list[str]] | None = None,
+    mdl_context: str | None = None,
 ) -> str:
     # Build schema block — single table or multi-table
     if extra_tables:
@@ -94,9 +95,11 @@ def generate_sql(
             + "\n".join(lines) + "\n\n"
         )
 
+    mdl_block = f"\n{mdl_context}\n" if mdl_context else ""
+
     prompt = f"""You are a Databricks SQL expert. Generate a single Databricks SQL query that precisely answers this question:
 
-{history_block}{product_hints_block}Question: {question}
+{history_block}{product_hints_block}{mdl_block}Question: {question}
 
 Table: {table_name}{columns_info}
 

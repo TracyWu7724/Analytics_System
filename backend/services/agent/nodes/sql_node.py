@@ -150,6 +150,17 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
 
     _progress(session_id, "generating", "Generating SQL...")
 
+    # MDL enrichment — detect metric references and inject semantic context
+    mdl_context: str | None = state.get("mdl_context")
+    if not mdl_context and attempts == 0:
+        try:
+            from ...text2sql.mdl.mdl_enricher import enrich_question
+            enriched = enrich_question(question)
+            if enriched.context_block:
+                mdl_context = enriched.context_block
+        except Exception:
+            pass
+
     # Step 3: generate (or fix) SQL
     try:
         sql = generate_sql_query(
@@ -162,6 +173,7 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             history=history,
             product_hints=product_hints if product_hints else None,
             extra_tables=extra_tables if extra_tables else None,
+            mdl_context=mdl_context,
         )
     except Exception as e:
         return {

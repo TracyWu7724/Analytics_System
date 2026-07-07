@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Upload, FileSpreadsheet, FileText, X, LogIn } from "lucide-react";
-import TablePreview from './TablePreview';
+import TablePreview from './table/TablePreview';
 import { ApiService } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 

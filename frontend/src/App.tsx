@@ -1,17 +1,19 @@
 import React from "react";
 import { BrowserRouter as Router, Routes, Route, useSearchParams } from "react-router-dom";
-import Home from "./components/Home";
-import AgentChat from "./components/AgentChat";
+import Home from "./pages/Home";
+import ChatPage from "./pages/ChatPage";
+import DatabasePage from "./pages/DatabasePage";
+import HistoryPage from "./pages/HistoryPage";
 
-const AgentChatWrapper: React.FC = () => {
+const ChatPageWrapper: React.FC = () => {
   const [searchParams] = useSearchParams();
-  const initialQuery = searchParams.get('query')    || '';
-  const llmModel     = searchParams.get('llm_model') || undefined;
-  const sessionParam = searchParams.get('session')   || undefined;
+  const initialQuery = searchParams.get("query") || "";
+  const llmModel     = searchParams.get("llm_model") || undefined;
+  const sessionParam = searchParams.get("session")   || undefined;
 
   return (
-    <AgentChat
-      key={sessionParam ?? 'new'}
+    <ChatPage
+      key={sessionParam ?? "new"}
       initialQuery={initialQuery}
       initialLlmModel={llmModel}
       sessionIdProp={sessionParam}
@@ -19,17 +21,15 @@ const AgentChatWrapper: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
-  return (
-    <Router>
-      <div className="App">
-        <Routes>
-          <Route path="/"      element={<Home />} />
-          <Route path="/agent" element={<AgentChatWrapper />} />
-        </Routes>
-      </div>
-    </Router>
-  );
-};
+const App: React.FC = () => (
+  <Router>
+    <Routes>
+      <Route path="/"          element={<Home />} />
+      <Route path="/agent"     element={<ChatPageWrapper />} />
+      <Route path="/database"  element={<DatabasePage />} />
+      <Route path="/history"   element={<HistoryPage />} />
+    </Routes>
+  </Router>
+);
 
 export default App;

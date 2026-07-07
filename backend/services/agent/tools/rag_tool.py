@@ -84,6 +84,7 @@ def run_rag(
     denied_sources: Optional[list[str]] = None,
     product_index=None,
     retrieval_question: Optional[str] = None,
+    kg=None,
 ) -> dict:
     """
     Run the full RAG pipeline and return answer + retrieved chunks.
@@ -125,12 +126,13 @@ def run_rag(
                 },
             }
 
-        # ── Retrieval ─────────────────────────────────────────────────────────
+        # ── Retrieval (with optional KG-augmented query expansion) ───────────
         results: list[RetrievalResult] = retriever.retrieve_for_prepared_query(
             prepared,
             initial_k=initial_k,
             final_k=final_k,
             product_uuid=product_uuid,
+            kg=kg,
         )
 
         # Filter denied sources BEFORE building the LLM context.
