@@ -1,212 +1,69 @@
 # Analytics System
+Natural language interface to data and product manuals query. Users ask questions in plain English; the system routes to Text2SQL, RAG, or both, and returns results with sources and debug info.
 
-Natural language interface to databases and product manuals. Users ask questions in plain English; the system routes to Text2SQL, RAG, or both, and returns results with sources and debug info.
+## Documentation
 
----
+- [`docs/architecture.md`](docs/architecture.md) — system overview, components, request workflow, data flow, routing logic, sequence diagrams
+- [`docs/knowledge_prep_design.md`](docs/knowledge_prep_design.md) — how PDFs become searchable knowledge (batch + incremental indexing, knowledge graph construction)
+- [`docs/evaluation.md`](docs/evaluation.md) — datasets, metrics, evaluation pipeline, benchmark results
+- [`docs/deployment.md`](docs/deployment.md) — local dev, Docker deployment, environment variables, security considerations
 
-## Milestones
+**Latest benchmark results** (full breakdown in [`docs/evaluation.md`](docs/evaluation.md)):
 
-### Milestone 1 — Frontend Refactor
-
-**Goal:** make the frontend maintainable through a strict layered architecture.
-
-Each layer has one responsibility and never crosses into another layer's domain:
-
-| Layer | Responsibility | Never contains |
+| Pipeline | Baseline | This system |
 |---|---|---|
-| `pages/` | Route-level orchestration | reusable UI, API calls |
-| `components/` | Presentational UI | fetch calls, business logic |
-| `hooks/` | State + side effects | JSX, direct fetch calls |
-| `services/` | All API calls via `apiClient.ts` | React imports, state |
-| `types/` | Shared TypeScript contracts | runtime logic |
-| `utils/` | Pure, stateless helpers | side effects, API calls |
+| Text2SQL accuracy | 16.7% (Databricks) / 41.7% (vanilla LLM) | **95.8%** |
+| RAG answer accuracy | 70.3% (plain LLM) | **95.9%** |
+| Router mode-selection accuracy | — | 86.7–95.8% across routes |
 
-**How it works:**
+## Features
 
-```
-pages/ChatPage.tsx              ← route entry point
-  └→ components/AgentChat.tsx   ← rendering template
-       ├→ hooks/useChat.ts       ← all chat state + SSE streaming
-       │    └→ services/chatService.ts
-       │         └→ services/apiClient.ts   ← single HTTP gateway (auth, timeout, errors)
-       ├→ hooks/useLlmModels.ts
-       │    └→ services/llmService.ts
-       └→ components/chat/RouteBadge.tsx
-```
+- **Hybrid Text2SQL + RAG agent** — an LLM router classifies each question as `sql`, `rag`, `both`, or `schema`, with a keyword-based fallback if the LLM call fails (see `docs/architecture.md#routing-logic`)
+- **Self-correcting SQL generation** — up to 3 retries per query, with a hallucination guard that validates generated SQL against the real schema, column semantics, and known database values before execution
+- **Verified RAG** — hybrid FAISS + keyword retrieval, knowledge-graph query expansion, and a 3-gate check (product exists → retrieval quality → answer grounding) before an answer is returned
+- **Hybrid synthesis** — for questions needing both data and knowledge, a synthesizer node combines SQL results and document context into one narrative rather than concatenating them
+- **MDL semantic layer** — business metric/join definitions (`backend/mdl/schema.yaml`) injected automatically into SQL generation, so "revenue" always means `SUM(net_sales)`
+- **Auto-generated hybrid index** — database values are profiled and indexed automatically (no manual entity lists) to validate SQL filter values at query time
+- **Knowledge graph over product documents** — PDF uploads are parsed, chunked, embedded, and mined for entities/relations, used to expand retrieval queries (e.g. "what replaces LOCTITE 243?")
+- **Role-based access control** — per-role table and document denylists, enforced inside the agent graph rather than filtered after the fact
+- **Streaming progress** — SSE-based step-by-step progress (`routing → generating → executing → validating`) rendered live in the chat UI
+- **User feedback capture** — thumbs up/down on any answer, stored with a conversation-history snapshot for later analysis
+- **In-house observability** — per-query latency and routing/SQL metadata logged to `observability/logs/audit.log`, no external tracing service required
 
-**Key rules enforced:**
-- All HTTP goes through `services/apiClient.ts` — no raw `fetch` elsewhere
-- Components never call APIs directly — always through a hook
-- Shared types live in `types/` — no inline interface definitions
+## Configuration
+### 1. LLM API
 
-**Directory structure (`frontend/src/`):**
+At least one provider key is required in `.env`:
 
 ```
-├── pages/               # ChatPage, HomePage, DatabasePage, HistoryPage
-├── components/
-│   ├── chat/            # RouteBadge
-│   ├── common/          # LoadingState, ErrorState, EmptyState
-│   ├── debug/           # DebugPanel
-│   ├── home/            # HeroSection
-│   ├── layouts/         # AppLayout, HeaderBar
-│   ├── selectors/       # ModelSelector
-│   └── table/           # TablePreview
-├── hooks/               # useAuth, useChat, useLlmModels, useTables, useQueryHistory
-├── services/            # apiClient, chatService, llmService, databaseService,
-│                        # feedbackService, uploadService, diagnosticsService
-├── types/               # chat.ts, database.ts, api.ts
-├── utils/               # parseStream, downloadCsv, formatSql, formatLatency
-└── config/              # api.ts
+OPENAI_API_KEY=sk-...     # enables gpt-4o, gpt-4o-mini
+GEMINI_API_KEY=AIza...    # enables gemini-2.5-flash
 ```
 
----
+Available models are defined in `backend/services/text2sql/generation/llm_registry.py` (`LLM_MODELS`); the default is `gpt-4o`. `GET /llm-models` returns which models are actually usable given the keys present in the environment.
 
-### Milestone 2 — Auto-Generated Hybrid Index
+### 2. Databricks token
+**Databricks credentials** (`DATABRICKS_SERVER_HOSTNAME`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN`):
 
-**Goal:** remove manual entity maintenance — the system automatically profiles and indexes all database values so the hallucination guard can validate SQL filter values at query time.
+The backend connects to Databricks with a personal access token (PAT) — `databricks_service.py` only reads `DATABRICKS_TOKEN`, not the client ID/secret pair. PATs expire, so when queries start failing with `Invalid access token`, generate a new one:
 
-**How it works:**
+1. Log into the Databricks workspace at the URL in `DATABRICKS_SERVER_HOSTNAME`.
+2. Click your profile icon (top right) → **Settings**.
+3. Go to the **Developer** tab → **Access tokens** → **Manage** → **Generate new token**.
+4. Give it a comment and lifetime (or no expiry), click **Generate**, and copy the token immediately — it's only shown once.
+5. Paste it into `.env` as `DATABRICKS_TOKEN=<token>`.
 
-```
-Databricks tables
-  ↓
-column_profiler.py      — skip numeric types and high-cardinality (>5000 distinct)
-                          columns to keep index size manageable
-  ↓
-value_canonicalizer.py  — normalize raw values to canonical forms
-                          e.g. "LOCTITE-243" → "loctite 243",
-                               "N/A" → "not available"
-  ↓
-inverted_index.py       — build two persistent indexes:
-                          • exact hash map (O(1) lookup)
-                          • token posting lists (fuzzy match)
-                          • sentence-transformer embeddings for reranking
-  ↓
-hybrid_value_index.py   — thin facade that adds canonicalization at query time
-                          and exposes the same search_value() API
-  ↓
-entity_matcher.py       — query-time resolution:
-                          1. exact hash lookup
-                          2. token overlap scoring
-                          3. embedding cosine reranking
-                          4. LLM judge for ambiguous cases (score in suggest range)
-```
+`DATABRICKS_HTTP_PATH` comes from the SQL warehouse, not the token page:
 
-**Files:**
-- `backend/services/text2sql/indexing/column_profiler.py` — decides whether to index a column
-- `backend/services/text2sql/indexing/value_canonicalizer.py` — normalizes values + abbreviation expansion
-- `backend/services/text2sql/indexing/hybrid_value_index.py` — facade with canonical search
-- `backend/services/text2sql/indexing/entity_matcher.py` — full resolution pipeline with LLM judge
+1. In the workspace sidebar, go to **SQL Warehouses**.
+2. Open the warehouse you're connecting to → **Connection details** tab.
+3. Copy the **HTTP path** value into `.env` as `DATABRICKS_HTTP_PATH`.
 
----
+After updating `.env`, restart the backend so it picks up the new token.
 
-### Milestone 3 — MDL / Semantic Layer
 
-**Goal:** make Text2SQL business-aware by injecting metric definitions, join relationships, and synonym mappings directly into the SQL generation prompt.
 
-**How it works:**
-
-```
-User: "what was the revenue last quarter?"
-  ↓
-sql_node calls enrich_question()
-  ↓
-mdl_enricher.py scans the question for metric synonyms
-  "revenue" → matches Metric(Revenue, SUM(net_sales))
-  ↓
-builds a context block:
-  "## Semantic Layer (MDL)
-   ### Metric Definitions
-   - Revenue: SUM(net_sales) — Total net sales amount"
-  ↓
-context block is injected into the LLM SQL generation prompt
-  ↓
-LLM generates: SELECT SUM(net_sales) AS Revenue FROM sales WHERE ...
-               (not SELECT revenue FROM sales — that column doesn't exist)
-```
-
-**The semantic layer is defined in a single YAML file** (`backend/mdl/schema.yaml`):
-
-```yaml
-metrics:
-  - name: Revenue
-    expression: "SUM(net_sales)"
-    synonyms: ["revenue", "sales", "total sales", "net revenue", "income"]
-
-  - name: Usage
-    expression: "SUM(units_sold)"
-    synonyms: ["usage", "units", "volume", "quantity sold"]
-
-  - name: Margin
-    expression: "(SUM(net_sales) - SUM(cogs)) / NULLIF(SUM(net_sales), 0) * 100"
-    synonyms: ["margin", "gross margin", "profit margin"]
-
-joins:
-  - left_table: product
-    right_table: sales
-    on: "product.product_id = sales.product_id"
-```
-
-Edit this file and the **next query picks it up automatically** — the loader uses mtime-based caching so no server restart is needed.
-
-**API endpoints:**
-- `GET /mdl/config` — return current metric/join definitions
-- `POST /mdl/reload` — force reload from disk
-
-**Files:**
-- `backend/mdl/schema.yaml` — the semantic layer definition
-- `backend/services/text2sql/mdl/mdl_loader.py` — YAML parser with mtime cache
-- `backend/services/text2sql/mdl/mdl_enricher.py` — detects metric/join matches and builds the context block
-
----
-
-### Milestone 4 — Document Intelligence + KG-RAG
-
-**Goal:** upgrade RAG from chunk retrieval to structured knowledge — extract entities and relations from indexed PDFs into a knowledge graph, then use it to expand queries at retrieval time.
-
-**How it works:**
-
-```
-PDF upload (POST /upload/pdf)
-  ↓
-incremental.py          — parse → chunk → embed → merge FAISS index
-  ↓
-kg_builder.py           — async background task on new chunks:
-                          • entity_extractor.py: spaCy NER + product code patterns
-                            e.g. "LOCTITE 243", "3M VHB 4950"
-                          • relation_extractor.py: pattern-based triples
-                            e.g. (LOCTITE 243, is_used_for, thread locking)
-                          • knowledge_graph.py: NetworkX DiGraph, persisted as JSON
-  ↓
-Query time (POST /agent/query/stream)
-  ↓
-kg_retriever.py         — expand the query using KG neighbors
-                          e.g. "what replaces LOCTITE 243?"
-                               → KG finds: LOCTITE 243 → replaces → LOCTITE 2400
-                               → expanded query includes "LOCTITE 2400"
-  ↓
-hybrid_retriever.py     — FAISS + keyword search on the expanded query
-                          → retrieves chunks for both products
-  ↓
-LLM generation          — answers with fuller context
-```
-
-**Graceful degradation:** all KG code is wrapped in try/except. If `networkx` or `spacy` are unavailable, retrieval falls back to the original query without expansion.
-
-**API endpoint:**
-- `GET /kg/stats` — return node/edge counts from the knowledge graph
-
-**Files:**
-- `backend/services/rag/kg/entity_extractor.py` — spaCy NER + product code regex
-- `backend/services/rag/kg/relation_extractor.py` — pattern-based triple extraction
-- `backend/services/rag/kg/knowledge_graph.py` — NetworkX DiGraph with save/load
-- `backend/services/rag/kg/kg_builder.py` — builds graph from chunks, async-safe
-- `backend/services/rag/retrieval/kg_retriever.py` — query expansion from KG neighbors
-- `backend/services/utils/nlp_utils.py` — shared lazy-loaded spaCy singleton
-
----
-
-## Running the system
+## Quick Start
 
 ```bash
 # Frontend
@@ -218,14 +75,53 @@ cd backend
 uvicorn services.api.agent:app --reload
 ```
 
+## Example
+
+Ask a question in the chat UI (or `POST /agent/query`) and the router picks the pipeline automatically:
+
+| Question | Route | What happens |
+|---|---|---|
+| "Show total sales for LOCTITE 243" | `sql` | Generates and executes SQL against Databricks, returns the rows as a table |
+| "What is the cure time for LOCTITE 243?" | `rag` | Retrieves the product datasheet chunk, verifies it's grounded, answers from documentation |
+| "Why did sales of LOCTITE 401 drop this quarter?" | `both` | Runs SQL for the sales numbers *and* RAG for product context, then synthesizes one answer that explains the numbers using the documentation |
+| "What tables do you have?" | `schema` | Answered directly from the connected Databricks schema — no LLM call |
+
+```bash
+curl -X POST http://localhost:8000/agent/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the cure time for LOCTITE 243?", "llm_model": "gpt-4o"}'
+```
+
+```json
+{
+  "question": "What is the cure time for LOCTITE 243?",
+  "route": "rag",
+  "route_reasoning": "The question asks for product specifications from documentation.",
+  "final_answer": "LOCTITE 243 has a fixture time of 10-20 minutes and a full cure time of 24 hours at room temperature...",
+  "sql_query": null,
+  "rag_chunks": [{"text": "...", "score": 0.87, "source": "LOCTITE-243-en_GL.pdf"}],
+  "error": null
+}
+```
+
 **Environment variables:**
 ```
 INDEX_DIR          path for index files (schema, value, history, KG)
 RAG_EMBED_DIR      path for FAISS index and metadata
 RAG_EMBED_MODEL    embedding model (default: sentence-transformers/all-MiniLM-L6-v2)
 RAG_RERANKER_MODEL optional cross-encoder for reranking
-LANGCHAIN_API_KEY  enables LangSmith tracing (optional)
+AUDIT_LOG_DIR       directory for the audit log (default: observability/logs/)
 ```
+
+**Tracing:** each `/agent/query` call is timed and logged in-house — no external service required. `observability/audit_logger.py` writes one JSON line per query to `observability/logs/audit.log` with `question`, `route`, `sql_query`, `sql_table`, `session_id`, `user_id`, `llm_model`, and `latency_ms`.
+
+### Deployment (Docker)
+
+```bash
+docker compose -f docker/docker-compose.yml up --build
+```
+
+Backend → http://localhost:8000, frontend (nginx) → http://localhost:80. Full details (volumes, S3 cold-start sync, env vars, security considerations): [`docs/deployment.md`](docs/deployment.md).
 
 ## Domain definitions
 
@@ -236,3 +132,13 @@ These are encoded in `backend/mdl/schema.yaml` and injected automatically:
 - **Profit** = `SUM(net_sales) - SUM(cogs)`
 - **Margin** = `(SUM(net_sales) - SUM(cogs)) / NULLIF(SUM(net_sales), 0) * 100`
 - `product` joins `sales` on `product_id`
+
+## Roadmap
+
+Detailed design and rationale: [`docs/knowledge_prep_design.md`](docs/knowledge_prep_design.md).
+
+- **Unify batch and incremental indexing** — the offline bulk pipeline (`indexer.py`) and the online per-upload pipeline (`incremental.py`) currently write different filename conventions and default to different embedding models; reconcile them so a full offline rebuild is a drop-in replacement for the live index.
+- **Backfill the knowledge graph from the full corpus** — the KG currently only grows from incremental PDF uploads; run it once over the full batch corpus so graph coverage isn't gated on upload history.
+- **LLM fallback for relation extraction** — extend the regex-only relation extractor with an LLM pass for relations the patterns miss, mirroring the LLM-judge fallback already used in Text2SQL's entity matching.
+- **Delete/replace on re-upload** — re-uploading a product's PDF today only appends chunks; key updates off `product_uuid` so old chunks get retired.
+- **Product-scoped KG expansion** — restrict knowledge-graph query expansion to the current product when one is known, matching how vector search already scopes itself.
