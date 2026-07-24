@@ -10,7 +10,7 @@ Covers four hallucination types:
 Each check returns a (passed: bool, error_hint: str) tuple.
 The error_hint is injected into the next generation attempt.
 
-Traces are written to logs/hallucination_traces.jsonl for analysis.
+Traces are written to observability/logs/hallucination_traces.jsonl for analysis.
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 
 # ── Trace file ────────────────────────────────────────────────────────────────
 
-_ROOT = Path(__file__).resolve().parents[5]   # project root
-_TRACE_FILE = _ROOT / "logs" / "hallucination_traces.jsonl"
+_ROOT = Path(__file__).resolve().parents[4]   # project root
+_TRACE_FILE = _ROOT / "observability" / "logs" / "hallucination_traces.jsonl"
 _TRACE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 

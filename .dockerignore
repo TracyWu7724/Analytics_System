@@ -25,12 +25,11 @@ frontend/.env.*
 # Local data / indexes (loaded from S3 or rebuilt at runtime)
 data/
 backend/index/
-logs/
+observability/logs/
 
 # Eval & notebooks (not needed in production)
 eval/eval_result/
 assets/
-scripts/
 tests/
 
 # OS

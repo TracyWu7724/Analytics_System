@@ -44,7 +44,7 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
+observability/logs/
 
 # Notebooks
 .ipynb_checkpoints/
