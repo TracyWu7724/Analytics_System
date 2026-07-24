@@ -3,7 +3,9 @@ api/agent.py — v2 FastAPI endpoint for the combined Text2SQL + RAG agent.
 
 POST /agent/query
     Accepts a question and returns the agent's answer, routing decision,
-    SQL query (if used), retrieved chunks (if used), and a LangSmith trace URL.
+    SQL query (if used), and retrieved chunks (if used). Each call is logged
+    to observability/audit_logger.py with latency, route, sql_query, sql_table,
+    session_id, user_id, llm_model, and question.
 """
 
 from __future__ import annotations
@@ -26,36 +28,13 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-# ── LangSmith tracing (optional) ────────────────────────────────────────────
-_LANGSMITH_ENABLED = bool(os.getenv("LANGCHAIN_API_KEY"))
-_ls_client = None
-_tl_run_id = threading.local()
+# ── Tracing (in-house — latency + structured audit log, no external service) ─
+import time
 
 try:
-    from langsmith import Client, traceable
-    from langsmith.run_helpers import get_current_run_tree
-    if _LANGSMITH_ENABLED:
-        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
-        _ls_client = Client()
+    from observability.audit_logger import audit
 except ImportError:
-    _LANGSMITH_ENABLED = False
-
-
-def _share_run(run_id: Optional[str]) -> Optional[str]:
-    if not _ls_client or not run_id:
-        return None
-    try:
-        _ls_client.flush()
-    except Exception:
-        pass
-    import time
-    for wait in [1, 2, 3]:
-        time.sleep(wait)
-        try:
-            return _ls_client.share_run(run_id)
-        except Exception:
-            continue
-    return None
+    audit = None
 
 
 # ── Service imports ──────────────────────────────────────────────────────────
@@ -258,16 +237,23 @@ class AgentQueryResponse(BaseModel):
 
 
 # ── Traced agent runner ───────────────────────────────────────────────────────
-if _LANGSMITH_ENABLED:
-    @traceable(run_type="chain", name="agent-query")
-    def _run_agent(initial_state: dict) -> dict:
-        rt = get_current_run_tree()
-        _tl_run_id.value = str(rt.id) if rt else None
-        return _agent.invoke(initial_state)
-else:
-    def _run_agent(initial_state: dict) -> dict:
-        _tl_run_id.value = None
-        return _agent.invoke(initial_state)
+def _run_agent(initial_state: dict) -> dict:
+    t0 = time.perf_counter()
+    result = _agent.invoke(initial_state)
+    latency_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    if audit:
+        audit.agent_query(
+            initial_state.get("question", ""),
+            route=result.get("route"),
+            sql_query=result.get("sql_query"),
+            sql_table=result.get("sql_table"),
+            session_id=initial_state.get("session_id"),
+            user_id=initial_state.get("user_id"),
+            llm_model=initial_state.get("llm_model"),
+            latency_ms=latency_ms,
+        )
+    return result
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -383,7 +369,6 @@ async def agent_query_stream(
 
     def _run():
         try:
-            _tl_run_id.value = None
             result = _run_agent(initial_state)
             prog_queue.put({"type": "result", "data": {
                 "question":        request.question,
@@ -464,10 +449,7 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
     try:
         # Run agent synchronously (LangGraph is sync); offload to thread so we
         # don't block the event loop
-        _tl_run_id.value = None
         result = await asyncio.to_thread(_run_agent, initial_state)
-        run_id = getattr(_tl_run_id, "value", None)
-        trace_url = await asyncio.to_thread(_share_run, run_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Agent error: {e}")
 
@@ -484,7 +466,6 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
         rag_chunks=result.get("rag_chunks"),
         rag_verification=result.get("rag_verification"),
         error=result.get("error"),
-        trace_url=trace_url,
     )
 
 

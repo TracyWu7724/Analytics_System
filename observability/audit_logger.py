@@ -39,7 +39,7 @@ def _build_logger(log_dir: Optional[str] = None) -> logging.Logger:
     if log_dir is None:
         log_dir = os.environ.get(
             "AUDIT_LOG_DIR",
-            os.path.join(os.path.dirname(__file__), "..", "logs"),
+            os.path.join(os.path.dirname(__file__), "logs"),
         )
     os.makedirs(log_dir, exist_ok=True)
 
@@ -132,6 +132,33 @@ class AuditLogger:
     ) -> None:
         """Log an uploaded-table deletion."""
         _write("text2sql.delete_table", table_name=table_name, user=user)
+
+    # -- Agent (Text2SQL + RAG combined) --------------------------------------
+
+    def agent_query(
+        self,
+        question: str,
+        *,
+        route: Optional[str] = None,
+        sql_query: Optional[str] = None,
+        sql_table: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+    ) -> None:
+        """Log one end-to-end agent query: routing decision, SQL used, and latency."""
+        _write(
+            "agent.query",
+            question=question,
+            route=route,
+            sql_query=sql_query,
+            sql_table=sql_table,
+            session_id=session_id,
+            user_id=user_id,
+            llm_model=llm_model,
+            latency_ms=latency_ms,
+        )
 
     # -- RAG ------------------------------------------------------------------
 

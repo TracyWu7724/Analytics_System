@@ -26,6 +26,7 @@ export function useChat({ initialQuery = '', initialLlmModel, sessionIdProp }: U
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState('');
+  const [progressSteps, setProgressSteps] = useState<string[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>(initialLlmModel ?? 'gpt-4o');
   const [feedbackSent, setFeedbackSent] = useState<Record<string, 'good' | 'bad'>>({});
   const [retryMessage, setRetryMessage] = useState<string | null>(null);
@@ -92,6 +93,7 @@ export function useChat({ initialQuery = '', initialLlmModel, sessionIdProp }: U
     setMessages(prev => [...prev, userMsg, loadingMsg]);
     setIsLoading(true);
     setLoadingStep('Understanding context...');
+    setProgressSteps([]);
 
     const history = messages
       .filter(m => !m.isLoading)
@@ -103,7 +105,10 @@ export function useChat({ initialQuery = '', initialLlmModel, sessionIdProp }: U
         streamQuery(
           { question: messageContent, llm_model: selectedModel, history, session_id: sessionId.current },
           {
-            onProgress: (_step, label) => setLoadingStep(label),
+            onProgress: (_step, label) => {
+              setLoadingStep(label);
+              setProgressSteps(prev => (prev[prev.length - 1] === label ? prev : [...prev, label]));
+            },
             onResult: (d) => { setLoadingStep(''); resolve(d); },
             onError: (msg) => { setLoadingStep(''); resolve({ error: msg }); },
           },
@@ -155,6 +160,7 @@ export function useChat({ initialQuery = '', initialLlmModel, sessionIdProp }: U
     } finally {
       setIsLoading(false);
       setLoadingStep('');
+      setProgressSteps([]);
     }
   }, [messages, selectedModel]);
 
@@ -189,6 +195,7 @@ export function useChat({ initialQuery = '', initialLlmModel, sessionIdProp }: U
     messages,
     isLoading,
     loadingStep,
+    progressSteps,
     selectedModel,
     setSelectedModel,
     feedbackSent,

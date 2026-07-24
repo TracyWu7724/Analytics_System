@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown } from 'lucide-react';
+import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown, Check, Loader2 } from 'lucide-react';
 import UserMenu from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
 import { useChat } from '../hooks/useChat';
@@ -27,6 +27,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
     messages,
     isLoading,
     loadingStep,
+    progressSteps,
     feedbackSent,
     sessionId,
     sendMessage,
@@ -157,15 +158,38 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                     }`}
                     style={message.type === 'user' ? { backgroundColor: '#113D73' } : {}}
                   >
-                    <p className="whitespace-pre-wrap">
-                      {message.isLoading ? (loadingStep || message.content) : message.content}
-                    </p>
-                    {message.isLoading && (
-                      <div className="flex space-x-1 mt-2">
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-                        <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                    {message.isLoading && progressSteps.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {progressSteps.map((step, i) => {
+                          const isCurrent = i === progressSteps.length - 1;
+                          return (
+                            <div
+                              key={i}
+                              className={`flex items-center gap-2 text-sm ${isCurrent ? 'text-gray-700' : 'text-gray-400'}`}
+                            >
+                              {isCurrent ? (
+                                <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+                              ) : (
+                                <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                              )}
+                              <span>{step}</span>
+                            </div>
+                          );
+                        })}
                       </div>
+                    ) : (
+                      <>
+                        <p className="whitespace-pre-wrap">
+                          {message.isLoading ? (loadingStep || message.content) : message.content}
+                        </p>
+                        {message.isLoading && (
+                          <div className="flex space-x-1 mt-2">
+                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                            <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" />
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
