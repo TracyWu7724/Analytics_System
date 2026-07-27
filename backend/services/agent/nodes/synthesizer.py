@@ -34,6 +34,11 @@ except Exception:
     except Exception:
         from generation.llm_registry import get_llm
 
+try:
+    from observability.metrics.costs import record_llm_usage
+except Exception:
+    record_llm_usage = None
+
 from ..state import AgentState
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
@@ -179,7 +184,10 @@ def synthesizer_node(state: AgentState) -> dict:
 
     try:
         llm = get_llm(llm_model)
-        answer = llm.invoke(prompt).content.strip()
+        response = llm.invoke(prompt)
+        if record_llm_usage is not None:
+            record_llm_usage(llm_model, response, pipeline="synthesis")
+        answer = response.content.strip()
     except Exception:
         # Fallback: structured concatenation so the user always gets something
         answer = (

@@ -183,3 +183,58 @@ class CostTracker:
 # Singleton instance — import and use directly:
 #   from observability.metrics.costs import cost_tracker
 cost_tracker = CostTracker()
+
+
+# ---------------------------------------------------------------------------
+# Usage extraction — one call site, three response shapes
+# ---------------------------------------------------------------------------
+#
+# This codebase calls LLMs through three different interfaces, each reporting
+# token usage differently:
+#   - LangChain chat models (ChatOpenAI, ChatGoogleGenerativeAI): the
+#     returned AIMessage has `.usage_metadata` as a dict/TypedDict with
+#     "input_tokens"/"output_tokens" (older LangChain versions used
+#     "prompt_tokens"/"completion_tokens").
+#   - google-genai SDK (used directly by rag/generation/generation.py's
+#     _ask_gemini, bypassing LangChain): `.usage_metadata` is an object, not
+#     a dict, with "prompt_token_count"/"candidates_token_count".
+#   - openai SDK (used directly by _ask_openai/_ask_ollama, bypassing
+#     LangChain): `.usage` is an object with "prompt_tokens"/"completion_tokens".
+#
+# record_llm_usage() tries all three shapes so every call site can use one
+# line instead of duplicating this extraction.
+
+def record_llm_usage(
+    model: str,
+    response: object,
+    pipeline: str = "unknown",
+) -> Optional[TokenUsage]:
+    """Best-effort token-usage extraction + recording. Never raises — returns
+    None (and records nothing) if the response has no usage info we recognize.
+    """
+    try:
+        input_tokens = 0
+        output_tokens = 0
+
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if isinstance(usage_metadata, dict):
+            input_tokens = usage_metadata.get("input_tokens") or usage_metadata.get("prompt_tokens") or 0
+            output_tokens = usage_metadata.get("output_tokens") or usage_metadata.get("completion_tokens") or 0
+        elif usage_metadata is not None:
+            # google-genai SDK: GenerateContentResponseUsageMetadata object
+            input_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
+            output_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
+
+        if not input_tokens and not output_tokens:
+            # openai SDK: response.usage.prompt_tokens / completion_tokens
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                input_tokens = getattr(usage, "prompt_tokens", 0) or 0
+                output_tokens = getattr(usage, "completion_tokens", 0) or 0
+
+        if not input_tokens and not output_tokens:
+            return None
+
+        return cost_tracker.record(model, input_tokens, output_tokens, pipeline=pipeline)
+    except Exception:
+        return None

@@ -823,6 +823,11 @@ try:
 except Exception:
     _live_cost_tracker = None
 
+try:
+    from observability.metrics.rag_quality import rag_quality_tracker as _live_rag_quality
+except Exception:
+    _live_rag_quality = None
+
 
 def _tail_jsonl(path: Path, max_lines: int = 2000) -> list[dict]:
     if not path.exists():
@@ -904,6 +909,15 @@ async def get_live_metrics(window_minutes: int = 15):
             "satisfaction_rate": round(good / total_feedback * 100, 1) if total_feedback else None,
         },
         "cost": _live_cost_tracker.summary() if _live_cost_tracker else None,
+        "rag": {
+            # Faithfulness (token-grounding) is the one eval/metrics/ RAG
+            # metric computable without ground truth, so it's the only one
+            # scored on live traffic — see eval/metrics/_faithfulness_core.py.
+            # Accuracy, AnswerRelevancy, and the three Contextual* metrics all
+            # need a reference answer or "ideal chunks" from eval/dataset/*.csv
+            # and only run through the offline eval driver.
+            "faithfulness": _live_rag_quality.summary() if _live_rag_quality else None,
+        },
     }
 
 

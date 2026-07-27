@@ -45,6 +45,21 @@ metrics — since there's no SQL/engine step in RAG, each docstring explains
 the substitution made (e.g. Faithfulness there compares SQL columns to
 retrieved schema; here it compares answer tokens to retrieved chunk text).
 
+Of the six, **Faithfulness is the only one that needs no ground truth** — it
+scores `actual_output` against `retrieval_context` alone, with no reference
+answer or "ideal chunks" required. The other five (Accuracy, AnswerRelevancy,
+ContextualPrecision, ContextualRecall, ContextualRelevancy) all compare
+against a reference answer or ideal-chunk list from `eval/dataset/*.csv`, so
+they only run through the offline driver below. Because Faithfulness has no
+such dependency, its scoring formula is factored out into
+`eval/metrics/_faithfulness_core.py` (`faithfulness_score()`) — a
+deepeval-free function — so it can also run on every live RAG query without
+pulling deepeval's dependency tree into the serving path. `faithfulness.py`'s
+`FaithfulnessMetric` (used by the offline driver) and the live path in
+`backend/services/agent/tools/rag_tool.py` both call the same function, so
+online and offline faithfulness scores are computed identically. See
+[Online evaluation](#online-evaluation) below.
+
 **Text2SQL metrics** (`text2sql_metrics.py`, 8 metrics via `Text2SQLResult`
 + `evaluate_text2sql()`):
 
@@ -95,7 +110,7 @@ traffic. This is the only evaluation currently backed by the
 
 ## Online evaluation
 
-Production traffic feeds two lightweight, always-on signals — no offline
+Production traffic feeds several lightweight, always-on signals — no offline
 dataset involved:
 
 1. **User feedback** — `POST /feedback` (thumbs up/down in the chat UI)
@@ -107,12 +122,47 @@ dataset involved:
    retrieval-quality, answer-grounding) runs on every live RAG query and
    is returned to the frontend as `rag_verification`; the audit log
    (`observability/audit_logger.py`) captures `route` and `latency_ms` per
-   query, so gate pass/fail rates and per-route latency are derivable from
-   production logs even without a dedicated online-eval dashboard.
+   query.
+3. **RAG faithfulness** — every live RAG query is also scored with the same
+   `faithfulness_score()` formula the offline `FaithfulnessMetric` uses (see
+   above), via `observability/metrics/rag_quality.py`'s `rag_quality_tracker`
+   (an in-process rolling window, last 500 scores).
+4. **Token cost** — `observability/metrics/costs.py`'s `cost_tracker` records
+   input/output tokens and estimated USD cost per LLM call. Currently only
+   `sql_generation.py` calls `cost_tracker.record()` — the RAG generation
+   call in `backend/services/rag/generation/generation.py` does not yet, so
+   cost totals undercount `rag`/`both`-route queries.
 
-There's no automated aggregation of `eval/user_feedback.jsonl` or the
-audit log into a dashboard today — both are append-only JSON/JSONL files
-meant to be analyzed ad hoc.
+### Live dashboard
+
+`GET /metrics/live` (`backend/services/api/agent.py`) aggregates all of the
+above into one JSON response on every call — no offline dataset, no stored
+aggregation table, just a fresh read of the audit log tail, the feedback
+file tail, and the two in-process trackers each time it's hit:
+
+- `queries` — total + recent (last `window_minutes`, default 15) query
+  counts, broken down `by_route`, read from `observability/logs/audit.log`
+  (`event == "agent.query"` lines).
+- `latency_ms` — avg/p50/p95 over the same audit-log window.
+- `feedback` — good/bad counts and satisfaction rate from
+  `eval/user_feedback.jsonl`.
+- `cost` — `cost_tracker.summary()` (session-lifetime, resets on restart).
+- `rag.faithfulness` — `rag_quality_tracker.summary()`: count, avg, p50,
+  p95, and the last 20 raw scores.
+
+The frontend polls this endpoint every 5s from the **Dashboard** tab of the
+Settings panel (`frontend/src/components/debug/MetricsDashboard.tsx`,
+opened via the gear icon → `DebugPanel.tsx`), which was previously
+diagnostics-only (now a second "Diagnostics" tab).
+
+**Still gaps:** `eval/user_feedback.jsonl` and the audit log are still plain
+append-only files — `/metrics/live` re-tails them on every request rather
+than reading from a proper aggregation store, so this doesn't scale past
+"tail the last couple thousand lines." `cost_tracker` and
+`rag_quality_tracker` are in-process and reset on every backend restart —
+neither is persisted. And only Faithfulness runs online; Accuracy,
+AnswerRelevancy, and the three Contextual* metrics still require the
+offline driver (see [Known gaps](#known-gaps)).
 
 ## Benchmark results
 
@@ -158,5 +208,19 @@ picking the more obviously-matching one).
   metric code.
 - The evaluation driver script that produced the current `assets/*.png`
   charts isn't in the repo (see [Evaluation pipeline](#evaluation-pipeline)).
-- Online signals (`eval/user_feedback.jsonl`, audit log) aren't
-  aggregated anywhere — no dashboard, no scheduled rollup.
+  `GET /eval/results` and `GET /eval/rows` (`backend/services/api/agent.py`)
+  already exist to serve `eval/eval_result/*.jsonl` to the frontend, but
+  return "no eval results found" until that driver is rewritten and run —
+  they aren't wired into the Dashboard tab for this reason.
+- `eval/user_feedback.jsonl` and the audit log are aggregated now (see
+  [Online evaluation](#online-evaluation)'s live dashboard), but only by
+  re-tailing the raw files on every request — no scheduled rollup, no
+  retention/downsampling, nothing persisted across a backend restart for
+  `cost_tracker` or `rag_quality_tracker`.
+- Only RAG Faithfulness runs online. Accuracy, AnswerRelevancy,
+  ContextualPrecision, ContextualRecall, and ContextualRelevancy all need a
+  reference answer or "ideal chunks" that live queries don't have, so they
+  stay offline-only until the missing driver above is rewritten.
+- Text2SQL's 8 metrics (`text2sql_metrics.py`) have no live counterpart at
+  all yet — the live dashboard currently only tracks RAG faithfulness,
+  Text2SQL/RAG query volume, latency, feedback, and cost.

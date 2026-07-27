@@ -20,22 +20,7 @@ import asyncio
 from deepeval.metrics import BaseMetric
 from deepeval.test_case import LLMTestCase
 
-_STOP_WORDS = {
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "to", "of", "in", "on",
-    "at", "by", "for", "with", "from", "and", "or", "but", "not", "it",
-    "its", "this", "that", "these", "those", "i", "you", "he", "she",
-    "we", "they", "what", "which", "who", "whom", "how", "when", "where",
-}
-
-
-def _content_tokens(text: str) -> set[str]:
-    return {
-        t.lower().strip(".,;:!?\"'()")
-        for t in text.split()
-        if t.lower().strip(".,;:!?\"'()") and t.lower() not in _STOP_WORDS
-    }
+from ._faithfulness_core import faithfulness_score
 
 
 class FaithfulnessMetric(BaseMetric):
@@ -47,20 +32,9 @@ class FaithfulnessMetric(BaseMetric):
         return asyncio.run(self.a_measure(test_case))
 
     async def a_measure(self, test_case: LLMTestCase, *args, **kwargs):
-        actual_tokens = _content_tokens(test_case.actual_output or "")
-
-        if not actual_tokens:
-            self.score = 0.0
-            self.success = False
-            return self.score
-
-        # Combine all retrieved chunks into a single token pool
-        retrieved_text = " ".join(test_case.retrieval_context or [])
-        retrieved_tokens = _content_tokens(retrieved_text)
-
-        intersection = actual_tokens & retrieved_tokens
-        self.score = len(intersection) / len(actual_tokens)
-
+        self.score = faithfulness_score(
+            test_case.actual_output or "", test_case.retrieval_context or []
+        )
         self.success = self.score >= self.threshold
         return self.score
 

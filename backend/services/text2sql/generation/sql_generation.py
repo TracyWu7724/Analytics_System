@@ -6,12 +6,12 @@ from .llm_registry import DEFAULT_LLM_MODEL, get_llm
 
 # Optional observability — no-op if the package isn't on sys.path
 try:
-    _obs_root = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..")
+    _obs_root = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
     if _obs_root not in sys.path:
         sys.path.insert(0, _obs_root)
-    from observability.metrics.costs import cost_tracker as _cost_tracker
+    from observability.metrics.costs import record_llm_usage as _record_llm_usage
 except Exception:
-    _cost_tracker = None
+    _record_llm_usage = None
 
 
 def detect_large_dataset_request(question: str) -> tuple[bool, int | None, int]:
@@ -124,15 +124,7 @@ SQL query:"""
 
     response = get_llm(llm_model).invoke(prompt)
 
-    # Record token usage if available
-    if _cost_tracker is not None:
-        try:
-            usage = getattr(response, "usage_metadata", None) or {}
-            input_tokens = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
-            if input_tokens or output_tokens:
-                _cost_tracker.record(llm_model, input_tokens, output_tokens, pipeline="text2sql")
-        except Exception:
-            pass
+    if _record_llm_usage is not None:
+        _record_llm_usage(llm_model, response, pipeline="text2sql")
 
     return response.content.strip()

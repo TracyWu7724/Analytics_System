@@ -22,6 +22,11 @@ except Exception:
     except Exception:
         from generation.llm_registry import get_llm
 
+try:
+    from observability.metrics.costs import record_llm_usage
+except Exception:
+    record_llm_usage = None
+
 from ..state import AgentState
 
 # ── Schema-introspection fast path ──────────────────────────────────────────
@@ -119,6 +124,8 @@ def router_node(state: AgentState) -> dict:
     try:
         llm = get_llm(user_model)
         response = llm.invoke(_ROUTER_PROMPT.format(question=question))
+        if record_llm_usage is not None:
+            record_llm_usage(user_model, response, pipeline="router")
         route, reasoning = _parse_route(response.content, question)
         return {"route": route, "route_reasoning": reasoning}
     except Exception:

@@ -12,6 +12,11 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+try:
+    from observability.metrics.costs import record_llm_usage
+except Exception:
+    record_llm_usage = None
+
 
 def build_prompt(
     context: str,
@@ -86,6 +91,8 @@ def _ask_gemini(
             max_output_tokens=max_tokens,
         ),
     )
+    if record_llm_usage is not None:
+        record_llm_usage(model, response, pipeline="rag")
     return response.text.strip()
 
 
@@ -107,6 +114,8 @@ def _ask_openai(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+    if record_llm_usage is not None:
+        record_llm_usage(model, response, pipeline="rag")
     return response.choices[0].message.content.strip()
 
 
@@ -146,6 +155,8 @@ def _ask_ollama(
         temperature=temperature,
         max_tokens=max_tokens,
     )
+    if record_llm_usage is not None:
+        record_llm_usage(model, response, pipeline="rag")
     return response.choices[0].message.content.strip()
 
 

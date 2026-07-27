@@ -27,6 +27,11 @@ if TYPE_CHECKING:
     from ..db.databricks_service import DatabricksService
     from ..indexing.inverted_index import InvertedIndex
 
+try:
+    from observability.metrics.costs import record_llm_usage
+except Exception:
+    record_llm_usage = None
+
 # ── Trace file ────────────────────────────────────────────────────────────────
 
 _ROOT = Path(__file__).resolve().parents[4]   # project root
@@ -455,7 +460,10 @@ def validate_logic(
             sql=sql,
         )
         llm = get_llm(llm_model)
-        response = llm.invoke(prompt).content.strip()
+        raw_response = llm.invoke(prompt)
+        if record_llm_usage is not None:
+            record_llm_usage(llm_model, raw_response, pipeline="text2sql_correction")
+        response = raw_response.content.strip()
 
         # Strip markdown fences
         response = _re.sub(r"```(?:json)?\s*|\s*```", "", response).strip()

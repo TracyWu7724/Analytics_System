@@ -31,6 +31,23 @@ except ImportError:
         verify_answer_grounding,
     )
 
+# Live faithfulness scoring — reuses the same dependency-free formula as the
+# offline eval/metrics/faithfulness.py FaithfulnessMetric (see
+# eval/metrics/_faithfulness_core.py), without pulling deepeval into the
+# serving path. Optional: repo root may not be on sys.path in every
+# deployment shape, so this degrades gracefully rather than breaking RAG.
+try:
+    import sys as _sys
+    from pathlib import Path as _Path
+    _repo_root = str(_Path(__file__).resolve().parents[4])
+    if _repo_root not in _sys.path:
+        _sys.path.insert(0, _repo_root)
+    from eval.metrics._faithfulness_core import faithfulness_score
+    from observability.metrics.rag_quality import rag_quality_tracker
+except Exception:
+    faithfulness_score = None
+    rag_quality_tracker = None
+
 
 # ── Retriever cache ───────────────────────────────────────────────────────────
 # Loading the FAISS index from disk is expensive. Cache one HybridRetriever
@@ -197,9 +214,23 @@ def run_rag(
         if not gate3.passed:
             answer = gate3.refusal + answer
 
+        # eval/metrics faithfulness score (token-grounding), computed on the
+        # answer actually shown to the user, not the pre-refusal-prefix draft.
+        faithfulness = None
+        if faithfulness_score is not None:
+            try:
+                faithfulness = round(
+                    faithfulness_score(answer, [c["text"] for c in chunks]), 3
+                )
+                if rag_quality_tracker is not None:
+                    rag_quality_tracker.record(faithfulness)
+            except Exception:
+                faithfulness = None
+
         verification = {
             "passed":       gate3.passed,
             "failed_layer": 0 if gate3.passed else 3,
+            "faithfulness": faithfulness,
             "layers": [
                 {"layer": g.layer, "name": g.name, "passed": g.passed,
                  "score": round(g.score, 3), "detail": g.detail}

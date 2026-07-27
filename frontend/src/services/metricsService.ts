@@ -26,6 +26,15 @@ export interface LiveMetrics {
     total_tokens: number;
     total_cost_usd: number;
   } | null;
+  rag: {
+    faithfulness: {
+      count: number;
+      avg: number | null;
+      p50: number | null;
+      p95: number | null;
+      recent: number[];
+    } | null;
+  };
 }
 
 export async function getLiveMetrics(): Promise<LiveMetrics | { error: string }> {
