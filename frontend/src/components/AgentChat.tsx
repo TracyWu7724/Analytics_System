@@ -96,7 +96,7 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                 <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
               </div>
             )}
-            <button onClick={() => setShowDebugPanel(true)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="Debug">
+            <button onClick={() => setShowDebugPanel(true)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="Settings">
               <Settings className="w-5 h-5 text-gray-600" />
             </button>
             <UserMenu />

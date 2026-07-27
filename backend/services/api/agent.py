@@ -15,6 +15,8 @@ import json
 import os
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -804,6 +806,105 @@ async def get_eval_rows():
         return {"error": "No per-eval JSONL files found. Run: python -m scripts.run_eval"}
 
     return result
+
+
+# ── Live metrics (real-time evaluation dashboard) ─────────────────────────────
+# Aggregates the two "online evaluation" signals described in
+# docs/evaluation.md — the audit log (query volume + latency, per route) and
+# eval/user_feedback.jsonl (thumbs up/down) — which today are append-only
+# files with no aggregation anywhere else.
+
+_METRICS_ROOT = Path(__file__).resolve().parents[3]
+_AUDIT_LOG_PATH = _METRICS_ROOT / "observability" / "logs" / "audit.log"
+_LIVE_FEEDBACK_FILE = _METRICS_ROOT / "eval" / "user_feedback.jsonl"
+
+try:
+    from observability.metrics.costs import cost_tracker as _live_cost_tracker
+except Exception:
+    _live_cost_tracker = None
+
+
+def _tail_jsonl(path: Path, max_lines: int = 2000) -> list[dict]:
+    if not path.exists():
+        return []
+    with open(path, "r", errors="ignore") as f:
+        lines = f.readlines()[-max_lines:]
+    records: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return records
+
+
+def _percentile(values: list[float], p: float) -> float:
+    if not values:
+        return 0.0
+    values = sorted(values)
+    k = (len(values) - 1) * p / 100
+    lo, hi = int(k), min(int(k) + 1, len(values) - 1)
+    frac = k - lo
+    return round(values[lo] + frac * (values[hi] - values[lo]), 1)
+
+
+@app.get("/metrics/live")
+async def get_live_metrics(window_minutes: int = 15):
+    """Real-time evaluation metrics derived from live traffic: query volume,
+    latency, and user feedback, refreshed on every call so the frontend can
+    poll it for a live dashboard."""
+    audit_events = [r for r in _tail_jsonl(_AUDIT_LOG_PATH) if r.get("event") == "agent.query"]
+
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=window_minutes)
+
+    def _parse_ts(r: dict):
+        try:
+            return datetime.fromisoformat(r["ts"])
+        except Exception:
+            return None
+
+    recent = [r for r in audit_events if (ts := _parse_ts(r)) and ts >= cutoff]
+
+    all_latencies = [r["latency_ms"] for r in audit_events if r.get("latency_ms") is not None]
+    recent_latencies = [r["latency_ms"] for r in recent if r.get("latency_ms") is not None]
+
+    by_route: dict[str, int] = {}
+    for r in audit_events:
+        route = r.get("route") or "unknown"
+        by_route[route] = by_route.get(route, 0) + 1
+
+    feedback_records = _tail_jsonl(_LIVE_FEEDBACK_FILE, max_lines=5000)
+    good = sum(1 for f in feedback_records if f.get("rating") == "good")
+    bad = sum(1 for f in feedback_records if f.get("rating") == "bad")
+    total_feedback = good + bad
+
+    return {
+        "generated_at": now.isoformat(),
+        "queries": {
+            "total": len(audit_events),
+            "recent": len(recent),
+            "window_minutes": window_minutes,
+            "by_route": by_route,
+            "latest_ts": audit_events[-1]["ts"] if audit_events else None,
+        },
+        "latency_ms": {
+            "avg": round(sum(all_latencies) / len(all_latencies), 1) if all_latencies else 0,
+            "p50": _percentile(all_latencies, 50),
+            "p95": _percentile(all_latencies, 95),
+            "recent_avg": round(sum(recent_latencies) / len(recent_latencies), 1) if recent_latencies else 0,
+        },
+        "feedback": {
+            "total": total_feedback,
+            "good": good,
+            "bad": bad,
+            "satisfaction_rate": round(good / total_feedback * 100, 1) if total_feedback else None,
+        },
+        "cost": _live_cost_tracker.summary() if _live_cost_tracker else None,
+    }
 
 
 # ── Feedback ─────────────────────────────────────────────────────────────────

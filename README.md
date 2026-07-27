@@ -65,14 +65,21 @@ After updating `.env`, restart the backend so it picks up the new token.
 
 ## Quick Start
 
+The fastest way to get running — starts backend and frontend together:
+
 ```bash
+./setup.sh
+```
+
+To run them separately instead:
+
+```bash
+# Backend (from repo root)
+uvicorn backend.services.api.agent:app --reload
+
 # Frontend
 cd frontend
-npm run dev
-
-# Backend
-cd backend
-uvicorn services.api.agent:app --reload
+npm start
 ```
 
 ## Example
