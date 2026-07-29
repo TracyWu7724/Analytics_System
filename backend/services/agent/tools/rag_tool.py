@@ -102,6 +102,7 @@ def run_rag(
     product_index=None,
     retrieval_question: Optional[str] = None,
     kg=None,
+    trace_id: Optional[str] = None,
 ) -> dict:
     """
     Run the full RAG pipeline and return answer + retrieved chunks.
@@ -223,7 +224,7 @@ def run_rag(
                     faithfulness_score(answer, [c["text"] for c in chunks]), 3
                 )
                 if rag_quality_tracker is not None:
-                    rag_quality_tracker.record(faithfulness)
+                    rag_quality_tracker.record(faithfulness, trace_id=trace_id, question=question)
             except Exception:
                 faithfulness = None
 

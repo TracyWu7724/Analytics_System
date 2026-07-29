@@ -28,6 +28,7 @@ except Exception:
     record_llm_usage = None
 
 from ..state import AgentState
+from ..progress import emit as _progress
 
 # ── Schema-introspection fast path ──────────────────────────────────────────
 # Detected before the LLM call to avoid wasted tokens and wrong routing.
@@ -116,6 +117,9 @@ def router_node(state: AgentState) -> dict:
     """
     question = state["question"]
     user_model = state.get("llm_model", "gemini-2.5-flash")
+    trace_id = state.get("trace_id") or state.get("session_id", "")
+
+    _progress(trace_id, "route", "Classifying question...")
 
     # Fast path: schema introspection questions bypass the LLM router entirely
     if _is_schema_question(question):

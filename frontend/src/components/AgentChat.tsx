@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown, Check, Loader2 } from 'lucide-react';
+import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown, Check, Loader2, Activity } from 'lucide-react';
 import UserMenu from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
 import { useChat } from '../hooks/useChat';
@@ -96,6 +96,9 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                 <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
               </div>
             )}
+            <button onClick={() => navigate('/observability')} className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="Observability">
+              <Activity className="w-5 h-5 text-gray-600" />
+            </button>
             <button onClick={() => setShowDebugPanel(true)} className="p-2 hover:bg-gray-100 rounded-lg transition-colors" title="Settings">
               <Settings className="w-5 h-5 text-gray-600" />
             </button>

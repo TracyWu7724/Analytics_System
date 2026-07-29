@@ -8,6 +8,8 @@ export interface LiveMetrics {
     window_minutes: number;
     by_route: Record<string, number>;
     latest_ts: string | null;
+    success_rate: number | null;
+    error_count: number;
   };
   latency_ms: {
     avg: number;
@@ -24,7 +26,15 @@ export interface LiveMetrics {
   cost: {
     calls: number;
     total_tokens: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
     total_cost_usd: number;
+    by_model: Record<string, {
+      calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      cost_usd: number;
+    }>;
   } | null;
   rag: {
     faithfulness: {
@@ -35,11 +45,20 @@ export interface LiveMetrics {
       recent: number[];
     } | null;
   };
+  recent_queries: Array<{
+    ts: string | null;
+    question: string | null;
+    route: string;
+    latency_ms: number | null;
+    llm_model: string | null;
+    sql_table: string | null;
+  }>;
 }
 
-export async function getLiveMetrics(): Promise<LiveMetrics | { error: string }> {
+export async function getLiveMetrics(windowMinutes?: number): Promise<LiveMetrics | { error: string }> {
   try {
-    return await request<LiveMetrics>('/metrics/live', {}, 10_000);
+    const qs = windowMinutes ? `?window_minutes=${windowMinutes}` : '';
+    return await request<LiveMetrics>(`/metrics/live${qs}`, {}, 10_000);
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to load live metrics' };
   }

@@ -19,8 +19,9 @@ class AgentState(TypedDict):
     llm_model: str               # which LLM to use for generation
 
     # ── Identity ─────────────────────────────────────────────────────────────
-    session_id: Optional[str]     # UUID per chat session (for tracing)
+    session_id: Optional[str]     # UUID per chat session (may span multiple turns)
     user_id: Optional[str]        # username (for tracing)
+    trace_id: Optional[str]       # UUID unique to this single agent run (for span tracing)
 
     # ── Auth / data-access ───────────────────────────────────────────────────
     denied_tables: Optional[list[str]]       # table name substrings the user cannot query

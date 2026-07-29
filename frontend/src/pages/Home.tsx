@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { Settings, ChevronDown } from "lucide-react";
+import { Settings, ChevronDown, Activity } from "lucide-react";
 import AppLayout from "../components/layouts/AppLayout";
 import SearchBar from "../components/SearchBar";
 import { DebugPanel } from "../components/debug/DebugPanel";
@@ -56,6 +56,13 @@ const Home: React.FC = () => {
         }
         headerRight={
           <>
+            <button
+              onClick={() => navigate('/observability')}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              title="Observability"
+            >
+              <Activity className="w-5 h-5 text-gray-600" />
+            </button>
             <button
               onClick={() => setShowDebugPanel(true)}
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"

@@ -38,6 +38,11 @@ try:
 except ImportError:
     audit = None
 
+try:
+    from observability.trace_log import trace_start, trace_end
+except ImportError:
+    trace_start = trace_end = None
+
 
 # ── Service imports ──────────────────────────────────────────────────────────
 try:
@@ -236,17 +241,35 @@ class AgentQueryResponse(BaseModel):
     rag_verification: Optional[dict] = None
     error: Optional[str] = None
     trace_url: Optional[str] = None
+    trace_id: Optional[str] = None
 
 
 # ── Traced agent runner ───────────────────────────────────────────────────────
 def _run_agent(initial_state: dict) -> dict:
+    trace_id = initial_state.get("trace_id") or str(uuid.uuid4())
+    initial_state["trace_id"] = trace_id
+    question = initial_state.get("question", "")
+
+    if trace_start:
+        trace_start(trace_id, question, llm_model=initial_state.get("llm_model"))
+
     t0 = time.perf_counter()
     result = _agent.invoke(initial_state)
     latency_ms = round((time.perf_counter() - t0) * 1000, 1)
 
+    if trace_end:
+        trace_end(
+            trace_id,
+            route=result.get("route"),
+            latency_ms=latency_ms,
+            error=result.get("error"),
+            final_answer=result.get("final_answer"),
+            sql_query=result.get("sql_query"),
+        )
+
     if audit:
         audit.agent_query(
-            initial_state.get("question", ""),
+            question,
             route=result.get("route"),
             sql_query=result.get("sql_query"),
             sql_table=result.get("sql_table"),
@@ -254,6 +277,7 @@ def _run_agent(initial_state: dict) -> dict:
             user_id=initial_state.get("user_id"),
             llm_model=initial_state.get("llm_model"),
             latency_ms=latency_ms,
+            error=result.get("error"),
         )
     return result
 
@@ -331,13 +355,15 @@ async def agent_query_stream(
         from agent.progress import register, unregister
 
     session_id = request.session_id or str(uuid.uuid4())
-    prog_queue = register(session_id)
+    trace_id = str(uuid.uuid4())
+    prog_queue = register(trace_id)
 
     initial_state: dict = {
         "question":         request.question,
         "history":          request.history,
         "llm_model":        request.llm_model,
         "session_id":       session_id,
+        "trace_id":         trace_id,
         "user_id":          "",
         "uploaded_table":   None,
         "route":            None,
@@ -385,11 +411,12 @@ async def agent_query_stream(
                 "rag_verification":result.get("rag_verification"),
                 "error":           result.get("error"),
                 "trace_url":       None,
+                "trace_id":        trace_id,
             }})
         except Exception as e:
             prog_queue.put({"type": "error", "message": str(e)})
         finally:
-            unregister(session_id)
+            unregister(trace_id)
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -468,6 +495,7 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
         rag_chunks=result.get("rag_chunks"),
         rag_verification=result.get("rag_verification"),
         error=result.get("error"),
+        trace_id=initial_state.get("trace_id"),
     )
 
 
@@ -882,10 +910,28 @@ async def get_live_metrics(window_minutes: int = 15):
         route = r.get("route") or "unknown"
         by_route[route] = by_route.get(route, 0) + 1
 
+    error_count = sum(1 for r in audit_events if r.get("error"))
+    success_rate = round((len(audit_events) - error_count) / len(audit_events) * 100, 1) if audit_events else None
+
     feedback_records = _tail_jsonl(_LIVE_FEEDBACK_FILE, max_lines=5000)
     good = sum(1 for f in feedback_records if f.get("rating") == "good")
     bad = sum(1 for f in feedback_records if f.get("rating") == "bad")
     total_feedback = good + bad
+
+    # Raw per-query rows (already logged to the audit log) so the frontend can
+    # derive trends, top-slow-queries, and a recent-traces table client-side
+    # without any new instrumentation.
+    recent_queries = [
+        {
+            "ts": r.get("ts"),
+            "question": r.get("question"),
+            "route": r.get("route") or "unknown",
+            "latency_ms": r.get("latency_ms"),
+            "llm_model": r.get("llm_model"),
+            "sql_table": r.get("sql_table"),
+        }
+        for r in audit_events[-300:]
+    ][::-1]
 
     return {
         "generated_at": now.isoformat(),
@@ -895,6 +941,8 @@ async def get_live_metrics(window_minutes: int = 15):
             "window_minutes": window_minutes,
             "by_route": by_route,
             "latest_ts": audit_events[-1]["ts"] if audit_events else None,
+            "success_rate": success_rate,
+            "error_count": error_count,
         },
         "latency_ms": {
             "avg": round(sum(all_latencies) / len(all_latencies), 1) if all_latencies else 0,
@@ -918,6 +966,273 @@ async def get_live_metrics(window_minutes: int = 15):
             # and only run through the offline eval driver.
             "faithfulness": _live_rag_quality.summary() if _live_rag_quality else None,
         },
+        "recent_queries": recent_queries,
+    }
+
+
+# ── Traces (LangChain/LangSmith-style run tree, in-house) ────────────────────
+# Every agent run gets a trace_id (see backend/services/agent/progress.py and
+# observability/trace_log.py). Nodes emit a span each time they start a unit
+# of work; trace_start/trace_end bookend the run. This groups the raw span
+# log into per-trace records and turns the point-in-time span markers into a
+# waterfall of durations for the frontend.
+
+_TRACE_LOG_PATH = _METRICS_ROOT / "observability" / "logs" / "traces.log"
+
+
+def _load_traces(max_lines: int = 8000) -> dict[str, dict]:
+    events = _tail_jsonl(_TRACE_LOG_PATH, max_lines=max_lines)
+    traces: dict[str, dict] = {}
+    for e in events:
+        trace_id = e.get("trace_id")
+        if not trace_id:
+            continue
+        t = traces.setdefault(trace_id, {"trace_id": trace_id, "spans": []})
+        event = e.get("event")
+        if event == "trace.start":
+            t["question"] = e.get("question")
+            t["start_ts"] = e.get("ts")
+            t["llm_model"] = e.get("llm_model")
+        elif event == "trace.span":
+            t["spans"].append({"step": e.get("step"), "label": e.get("label"), "ts": e.get("ts")})
+        elif event == "trace.end":
+            t["end_ts"] = e.get("ts")
+            t["route"] = e.get("route")
+            t["latency_ms"] = e.get("latency_ms")
+            t["error"] = e.get("error")
+            t["final_answer"] = e.get("final_answer")
+            t["sql_query"] = e.get("sql_query")
+    return traces
+
+
+def _spans_with_durations(t: dict) -> list[dict]:
+    """A span's duration is the time until the next span (or trace end) begins —
+    this pipeline runs its steps sequentially, so consecutive span timestamps
+    are real start/end boundaries, not an approximation."""
+    if "start_ts" not in t:
+        return []
+    spans_sorted = sorted(t["spans"], key=lambda s: s["ts"])
+    start_ts = t["start_ts"]
+    end_ts = t.get("end_ts") or (spans_sorted[-1]["ts"] if spans_sorted else start_ts)
+    boundaries = [start_ts] + [s["ts"] for s in spans_sorted] + [end_ts]
+    return [
+        {
+            "step": s["step"],
+            "label": s["label"],
+            "start_ms": round((s["ts"] - start_ts) * 1000, 1),
+            "duration_ms": round(max(0.0, boundaries[i + 2] - s["ts"]) * 1000, 1),
+        }
+        for i, s in enumerate(spans_sorted)
+    ]
+
+
+@app.get("/traces")
+async def list_traces(limit: int = 50, offset: int = 0, route: Optional[str] = None, q: Optional[str] = None):
+    """Traces, newest first — one row per agent run. Optional route filter and
+    free-text search over the question."""
+    traces = [t for t in _load_traces().values() if "start_ts" in t]
+    if route and route != "all":
+        traces = [t for t in traces if (t.get("route") or "unknown") == route]
+    if q:
+        q_lower = q.lower()
+        traces = [t for t in traces if q_lower in (t.get("question") or "").lower() or q_lower in t["trace_id"]]
+    traces.sort(key=lambda t: t["start_ts"], reverse=True)
+
+    page = traces[offset:offset + limit]
+    return {
+        "total": len(traces),
+        "traces": [
+            {
+                "trace_id": t["trace_id"],
+                "question": t.get("question"),
+                "route": t.get("route"),
+                "start_ts": t["start_ts"],
+                "latency_ms": t.get("latency_ms"),
+                "error": t.get("error"),
+                "span_count": len(t["spans"]),
+                "complete": "end_ts" in t,
+            }
+            for t in page
+        ],
+    }
+
+
+@app.get("/traces/{trace_id}")
+async def get_trace(trace_id: str):
+    """A single trace's span waterfall/graph — a node's duration is the time until the next node starts."""
+    t = _load_traces().get(trace_id)
+    if not t or "start_ts" not in t:
+        raise HTTPException(status_code=404, detail="Trace not found")
+
+    spans = _spans_with_durations(t)
+    end_ts = t.get("end_ts") or (spans[-1]["start_ms"] / 1000 + t["start_ts"] if spans else t["start_ts"])
+
+    return {
+        "trace_id": trace_id,
+        "question": t.get("question"),
+        "route": t.get("route"),
+        "llm_model": t.get("llm_model"),
+        "error": t.get("error"),
+        "final_answer": t.get("final_answer"),
+        "sql_query": t.get("sql_query"),
+        "complete": "end_ts" in t,
+        "start_ts": t["start_ts"],
+        "total_ms": round((end_ts - t["start_ts"]) * 1000, 1),
+        "spans": spans,
+    }
+
+
+@app.get("/latency/stats")
+async def latency_stats(slo_threshold_ms: int = 2000):
+    """
+    Aggregate latency view: overall percentiles + SLO compliance, a per-route
+    breakdown (from the audit log), a per-pipeline-stage breakdown (from real
+    span durations across all traces), and the traces whose single slowest
+    stage ("bottleneck") took the longest — everything derived from data
+    already logged, no separate instrumentation.
+    """
+    audit_events = [r for r in _tail_jsonl(_AUDIT_LOG_PATH, max_lines=8000) if r.get("event") == "agent.query"]
+    all_latencies = [r["latency_ms"] for r in audit_events if r.get("latency_ms") is not None]
+
+    by_route_latencies: dict[str, list[float]] = {}
+    for r in audit_events:
+        lat = r.get("latency_ms")
+        if lat is None:
+            continue
+        route = r.get("route") or "unknown"
+        by_route_latencies.setdefault(route, []).append(lat)
+
+    total_count = len(all_latencies)
+    by_route = [
+        {
+            "route": route,
+            "count": len(lats),
+            "pct_of_total": round(len(lats) / total_count * 100, 1) if total_count else 0,
+            "p50": _percentile(lats, 50),
+            "p95": _percentile(lats, 95),
+            "p99": _percentile(lats, 99),
+        }
+        for route, lats in sorted(by_route_latencies.items(), key=lambda kv: -len(kv[1]))
+    ]
+
+    traces = _load_traces()
+    stage_durations: dict[str, list[float]] = {}
+    stage_labels: dict[str, str] = {}
+    slowest_traces: list[dict] = []
+
+    for t in traces.values():
+        if "start_ts" not in t or "end_ts" not in t:
+            continue
+        spans = _spans_with_durations(t)
+        if not spans:
+            continue
+        for s in spans:
+            stage_durations.setdefault(s["step"], []).append(s["duration_ms"])
+            stage_labels[s["step"]] = s["label"]
+
+        bottleneck = max(spans, key=lambda s: s["duration_ms"])
+        slowest_traces.append({
+            "trace_id": t["trace_id"],
+            "question": t.get("question"),
+            "route": t.get("route"),
+            "bottleneck_step": bottleneck["step"],
+            "bottleneck_label": bottleneck["label"],
+            "bottleneck_ms": bottleneck["duration_ms"],
+            "total_ms": t.get("latency_ms"),
+            "start_ts": t["start_ts"],
+        })
+
+    by_stage = [
+        {
+            "step": step,
+            "label": stage_labels[step],
+            "count": len(durs),
+            "p50": _percentile(durs, 50),
+            "p95": _percentile(durs, 95),
+            "p99": _percentile(durs, 99),
+        }
+        for step, durs in stage_durations.items()
+    ]
+    sum_p95 = sum(s["p95"] for s in by_stage) or 1
+    for s in by_stage:
+        s["pct_of_p95"] = round(s["p95"] / sum_p95 * 100, 1)
+    by_stage.sort(key=lambda s: -s["p95"])
+
+    slowest_traces.sort(key=lambda s: -s["bottleneck_ms"])
+
+    slo_count = sum(1 for l in all_latencies if l <= slo_threshold_ms)
+
+    return {
+        "overall": {
+            "p50": _percentile(all_latencies, 50),
+            "p95": _percentile(all_latencies, 95),
+            "p99": _percentile(all_latencies, 99),
+            "avg": round(sum(all_latencies) / total_count, 1) if total_count else 0,
+            "slo_threshold_ms": slo_threshold_ms,
+            "slo_compliance_pct": round(slo_count / total_count * 100, 1) if total_count else None,
+        },
+        "by_route": by_route,
+        "by_stage": by_stage,
+        "slowest_traces": slowest_traces[:5],
+    }
+
+
+@app.get("/quality/stats")
+async def quality_stats():
+    """
+    Real, ground-truth-free quality signals: pass/fail rate from the audit
+    log, live RAG faithfulness (token-grounding, scored on every RAG query —
+    see observability/metrics/rag_quality.py), and user feedback (thumbs
+    up/down) as a human-acceptance proxy. Offline eval metrics (Correctness,
+    Groundedness, Completeness, etc. — which need a reference answer, see
+    eval/metrics/) require `python -m scripts.run_eval` to have been run at
+    least once; omitted here rather than faked when no run exists.
+    """
+    audit_events = [r for r in _tail_jsonl(_AUDIT_LOG_PATH, max_lines=8000) if r.get("event") == "agent.query"]
+    total = len(audit_events)
+    error_count = sum(1 for r in audit_events if r.get("error"))
+    pass_rate = round((total - error_count) / total * 100, 1) if total else None
+
+    by_route_counts: dict[str, dict] = {}
+    for r in audit_events:
+        route = r.get("route") or "unknown"
+        d = by_route_counts.setdefault(route, {"count": 0, "errors": 0})
+        d["count"] += 1
+        if r.get("error"):
+            d["errors"] += 1
+    by_route = [
+        {
+            "route": route,
+            "count": d["count"],
+            "pct_of_total": round(d["count"] / total * 100, 1) if total else 0,
+            "pass_rate": round((d["count"] - d["errors"]) / d["count"] * 100, 1) if d["count"] else None,
+        }
+        for route, d in sorted(by_route_counts.items(), key=lambda kv: -kv[1]["count"])
+    ]
+
+    feedback_records = _tail_jsonl(_LIVE_FEEDBACK_FILE, max_lines=5000)
+    good = sum(1 for f in feedback_records if f.get("rating") == "good")
+    bad = sum(1 for f in feedback_records if f.get("rating") == "bad")
+    total_feedback = good + bad
+
+    faithfulness = _live_rag_quality.summary() if _live_rag_quality else None
+    worst_faithfulness = _live_rag_quality.worst(5) if _live_rag_quality else []
+
+    return {
+        "overall": {
+            "pass_rate": pass_rate,
+            "evaluated": total,
+            "error_count": error_count,
+        },
+        "faithfulness": faithfulness,
+        "human_acceptance": {
+            "rated": total_feedback,
+            "good": good,
+            "bad": bad,
+            "acceptance_rate": round(good / total_feedback * 100, 1) if total_feedback else None,
+        },
+        "by_route": by_route,
+        "worst_faithfulness": worst_faithfulness,
     }
 
 

@@ -11,16 +11,18 @@ Usage
 -----
     from observability.metrics.rag_quality import rag_quality_tracker
 
-    rag_quality_tracker.record(faithfulness=0.82)
+    rag_quality_tracker.record(faithfulness=0.82, trace_id="...", question="...")
     summary = rag_quality_tracker.summary()
     # {"count": 1, "avg": 0.82, "p50": 0.82, "p95": 0.82, "recent": [0.82]}
+    worst = rag_quality_tracker.worst(5)
+    # [{"faithfulness": 0.41, "trace_id": "...", "question": "..."}, ...]
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
-from typing import Any
+from typing import Any, Optional
 
 _MAX_SAMPLES = 500
 
@@ -40,10 +42,12 @@ class RagQualityTracker:
     def __init__(self, max_samples: int = _MAX_SAMPLES) -> None:
         self._lock = threading.Lock()
         self._faithfulness: deque[float] = deque(maxlen=max_samples)
+        self._records: deque[dict] = deque(maxlen=max_samples)
 
-    def record(self, faithfulness: float) -> None:
+    def record(self, faithfulness: float, trace_id: Optional[str] = None, question: Optional[str] = None) -> None:
         with self._lock:
             self._faithfulness.append(faithfulness)
+            self._records.append({"faithfulness": faithfulness, "trace_id": trace_id, "question": question})
 
     def summary(self) -> dict[str, Any]:
         with self._lock:
@@ -61,9 +65,17 @@ class RagQualityTracker:
             "recent": [round(v, 3) for v in recent],
         }
 
+    def worst(self, n: int = 5) -> list[dict]:
+        """The n lowest-scoring recorded queries (trace_id may be None for
+        older records that predate trace_id being threaded through)."""
+        with self._lock:
+            records = list(self._records)
+        return sorted(records, key=lambda r: r["faithfulness"])[:n]
+
     def reset(self) -> None:
         with self._lock:
             self._faithfulness.clear()
+            self._records.clear()
 
 
 # Singleton instance — import and use directly:

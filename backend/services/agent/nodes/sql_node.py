@@ -57,8 +57,9 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
     denied_tables: list[str] = state.get("denied_tables") or []
     session_id: str = state.get("session_id", "")
     user_id: str = state.get("user_id", "")
+    trace_id: str = state.get("trace_id") or session_id
 
-    _progress(session_id, "routing", "Understanding context...")
+    _progress(trace_id, "routing", "Understanding context...")
 
     # Step 1: pick tables (reuse cached value if we're correcting)
     cached_tables: list[str] = state.get("sql_tables") or []
@@ -85,7 +86,7 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             "sql_attempts": attempts + 1,
         }
 
-    _progress(session_id, "columns", "Retrieving table and columns...")
+    _progress(trace_id, "columns", "Retrieving table and columns...")
 
     # Fetch schema for primary table
     columns = get_columns(table_name, data_service)
@@ -148,7 +149,7 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
                 "final_answer": val_msg,
             }
 
-    _progress(session_id, "generating", "Generating SQL...")
+    _progress(trace_id, "generating", "Generating SQL...")
 
     # MDL enrichment — detect metric references and inject semantic context
     mdl_context: str | None = state.get("mdl_context")
@@ -287,12 +288,12 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
                 "sql_attempts": attempts + 1,
             }
 
-    _progress(session_id, "executing", "Executing SQL...")
+    _progress(trace_id, "executing", "Executing SQL...")
 
     # Step 3: execute
     try:
         rows = execute_sql_query(sql, table_name, data_service)
-        _progress(session_id, "validating", "Validating result...")
+        _progress(trace_id, "validating", "Validating result...")
 
         # Step 3a: Empty-result diagnosis
         # Treat as terminal (not retryable) — the SQL was valid but the entity

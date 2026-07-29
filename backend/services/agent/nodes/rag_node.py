@@ -36,6 +36,7 @@ def rag_node(
     llm_model = state.get("llm_model", "gemini-2.5-flash")
     history = state.get("history") or []
     session_id: str = state.get("session_id", "")
+    trace_id: str = state.get("trace_id") or session_id
     route = state.get("route", "rag")
 
     denied_rag_sources: list[str] = state.get("denied_rag_sources") or []
@@ -53,7 +54,7 @@ def rag_node(
             "Sales, revenue, and financial figures will be provided separately."
         )
 
-    _progress(session_id, "retrieving", "Searching knowledge base...")
+    _progress(trace_id, "retrieving", "Searching knowledge base...")
     result = run_rag(
         rag_question,
         metadata_path=metadata_path,
@@ -68,9 +69,10 @@ def rag_node(
         product_index=product_index,
         retrieval_question=question,  # always use clean original for FAISS retrieval
         kg=kg,
+        trace_id=trace_id,
     )
 
-    _progress(session_id, "validating", "Validating result...")
+    _progress(trace_id, "validating", "Validating result...")
     return {
         "rag_answer":       result["answer"] or None,
         "rag_chunks":       result.get("chunks") or [],

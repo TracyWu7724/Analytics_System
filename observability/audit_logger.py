@@ -146,8 +146,9 @@ class AuditLogger:
         user_id: Optional[str] = None,
         llm_model: Optional[str] = None,
         latency_ms: Optional[float] = None,
+        error: Optional[str] = None,
     ) -> None:
-        """Log one end-to-end agent query: routing decision, SQL used, and latency."""
+        """Log one end-to-end agent query: routing decision, SQL used, latency, and outcome."""
         _write(
             "agent.query",
             question=question,
@@ -158,6 +159,7 @@ class AuditLogger:
             user_id=user_id,
             llm_model=llm_model,
             latency_ms=latency_ms,
+            error=error,
         )
 
     # -- RAG ------------------------------------------------------------------

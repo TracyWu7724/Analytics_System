@@ -40,6 +40,7 @@ except Exception:
     record_llm_usage = None
 
 from ..state import AgentState
+from ..progress import emit as _progress
 
 # ── Prompt ────────────────────────────────────────────────────────────────────
 
@@ -120,6 +121,8 @@ def synthesizer_node(state: AgentState) -> dict:
     """LangGraph node: produce a hybrid answer from SQL data + RAG knowledge."""
     question  = state["question"]
     llm_model = state.get("llm_model", "gemini-2.5-flash")
+    trace_id = state.get("trace_id") or state.get("session_id", "")
+    _progress(trace_id, "synthesizing", "Combining SQL and RAG results...")
 
     sql_rows   = state.get("sql_rows") or []
     sql_query  = state.get("sql_query") or ""

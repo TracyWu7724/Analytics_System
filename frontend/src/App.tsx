@@ -4,6 +4,10 @@ import Home from "./pages/Home";
 import ChatPage from "./pages/ChatPage";
 import DatabasePage from "./pages/DatabasePage";
 import HistoryPage from "./pages/HistoryPage";
+import ObservabilityPage from "./pages/ObservabilityPage";
+import TracesPage from "./pages/TracesPage";
+import LatencyPage from "./pages/LatencyPage";
+import QualityPage from "./pages/QualityPage";
 
 const ChatPageWrapper: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -28,6 +32,10 @@ const App: React.FC = () => (
       <Route path="/agent"     element={<ChatPageWrapper />} />
       <Route path="/database"  element={<DatabasePage />} />
       <Route path="/history"   element={<HistoryPage />} />
+      <Route path="/observability" element={<ObservabilityPage />} />
+      <Route path="/traces" element={<TracesPage />} />
+      <Route path="/latency" element={<LatencyPage />} />
+      <Route path="/quality" element={<QualityPage />} />
     </Routes>
   </Router>
 );

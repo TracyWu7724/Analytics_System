@@ -8,10 +8,13 @@ we return the table list from data_service without touching the LLM or SQL.
 from __future__ import annotations
 
 from ..state import AgentState
+from ..progress import emit as _progress
 
 
 def schema_node(state: AgentState, *, data_service) -> dict:
     """Return the list of available Databricks tables as the final answer."""
+    trace_id = state.get("trace_id") or state.get("session_id", "")
+    _progress(trace_id, "listing", "Listing available tables...")
     try:
         tables = data_service.get_table_names()
     except Exception as exc:
