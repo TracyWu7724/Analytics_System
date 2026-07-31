@@ -91,13 +91,13 @@ export default function TracesPage() {
     setDetailLoading(true);
     getTrace(selectedId).then((result) => {
       if (cancelled) return;
-      if ("error" in result) {
-        setDetailError(result.error);
-        setDetail(null);
-      } else {
+      if ("trace_id" in result) {
         setDetailError(null);
         setDetail(result);
         setSelectedSpanIdx(null);
+      } else {
+        setDetailError(result.error);
+        setDetail(null);
       }
       setDetailLoading(false);
     });
@@ -300,7 +300,7 @@ export default function TracesPage() {
 
                   <div className="rounded-xl border border-gray-200 bg-white p-4 mb-4">
                     {detailTab === "graph" ? (
-                      <TraceGraph spans={detail.spans} selectedIndex={selectedSpanIdx} onSelect={setSelectedSpanIdx} />
+                      <TraceGraph spans={detail.spans} route={detail.route} selectedIndex={selectedSpanIdx} onSelect={setSelectedSpanIdx} />
                     ) : (
                       <TraceWaterfall trace={detail} />
                     )}
@@ -343,7 +343,14 @@ export default function TracesPage() {
             </div>
 
             {selectedId && detail && detailTab === "graph" && (
-              <StepDetailsPanel span={selectedSpan} stageStats={stageStats} sqlQuery={detail.sql_query} />
+              <StepDetailsPanel
+                span={selectedSpan}
+                stageStats={stageStats}
+                sqlQuery={detail.sql_query}
+                sqlTable={detail.sql_table}
+                mdlMetricsReferenced={detail.mdl_metrics_referenced}
+                entityResolutions={detail.entity_resolutions}
+              />
             )}
           </ErrorBoundary>
           </div>

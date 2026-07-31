@@ -24,6 +24,19 @@ export interface RagVerification {
   layers?: { layer: number; name: string; passed: boolean; score: number; detail: string }[];
 }
 
+export interface MdlMetricReferenced {
+  name: string;
+  expression: string;
+  description: string;
+}
+
+export interface EntityResolution {
+  mention: string;
+  resolved_to: string;
+  table: string;
+  column: string;
+}
+
 export interface AgentQueryResponse {
   route?: string;
   route_reasoning?: string;
@@ -33,6 +46,8 @@ export interface AgentQueryResponse {
   sql_table?: string;
   rag_chunks?: { text: string; score: number; source: string }[];
   rag_verification?: RagVerification;
+  mdl_metrics_referenced?: MdlMetricReferenced[];
+  entity_resolutions?: EntityResolution[];
   error?: string;
   trace_url?: string;
 }

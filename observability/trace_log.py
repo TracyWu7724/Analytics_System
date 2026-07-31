@@ -73,6 +73,9 @@ def trace_end(
     error: Optional[str] = None,
     final_answer: Optional[str] = None,
     sql_query: Optional[str] = None,
+    sql_table: Optional[str] = None,
+    mdl_metrics_referenced: Optional[list] = None,
+    entity_resolutions: Optional[list] = None,
 ) -> None:
     if not trace_id:
         return
@@ -85,4 +88,7 @@ def trace_end(
         "error": error,
         "final_answer": final_answer,
         "sql_query": sql_query,
+        "sql_table": sql_table,
+        "mdl_metrics_referenced": mdl_metrics_referenced,
+        "entity_resolutions": entity_resolutions,
     })

@@ -203,6 +203,9 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                         results={message.results || []}
                         error={message.error || ''}
                         sql_query={message.sql_query}
+                        sql_table={message.sql_table}
+                        mdl_metrics_referenced={message.mdl_metrics_referenced}
+                        entity_resolutions={message.entity_resolutions}
                         onClose={() => dismissResult(message.id!)}
                       />
                     </div>

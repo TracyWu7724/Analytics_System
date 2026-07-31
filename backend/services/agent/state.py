@@ -47,7 +47,10 @@ class AgentState(TypedDict):
 
     # ── MDL / semantic layer ─────────────────────────────────────────────────
     mdl_context: Optional[str]              # injected MDL block for SQL prompt
-    mdl_metrics_referenced: Optional[list[str]]  # metric names detected in question
+    mdl_metrics_referenced: Optional[list[dict]]  # [{"name","expression","description"}]
+
+    # ── Provenance ───────────────────────────────────────────────────────────
+    entity_resolutions: Optional[list[dict]]  # [{"mention","resolved_to","table","column"}]
 
     # ── Output ───────────────────────────────────────────────────────────────
     final_answer: Optional[str]

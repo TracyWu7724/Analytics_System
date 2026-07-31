@@ -31,6 +31,9 @@ export interface TraceDetail {
   error: string | null;
   final_answer: string | null;
   sql_query: string | null;
+  sql_table: string | null;
+  mdl_metrics_referenced: { name: string; expression: string; description: string }[] | null;
+  entity_resolutions: { mention: string; resolved_to: string; table: string; column: string }[] | null;
   complete: boolean;
   start_ts: number;
   total_ms: number;

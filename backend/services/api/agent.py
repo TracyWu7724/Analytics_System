@@ -172,7 +172,7 @@ else:
 
 # Knowledge Graph — load from disk if available, build async otherwise
 _KG_PATH = os.path.join(os.getenv("INDEX_DIR", "") or str(
-    __import__("pathlib").Path(__file__).resolve().parents[3] / "index"
+    __import__("pathlib").Path(__file__).resolve().parents[3] / "backend" / "index"
 ), "knowledge_graph.json")
 _kg = KnowledgeGraph()
 if not _kg.load(_KG_PATH):
@@ -239,6 +239,8 @@ class AgentQueryResponse(BaseModel):
     sql_attempts: int = 0
     rag_chunks: Optional[list[dict]] = None
     rag_verification: Optional[dict] = None
+    mdl_metrics_referenced: Optional[list[dict]] = None
+    entity_resolutions: Optional[list[dict]] = None
     error: Optional[str] = None
     trace_url: Optional[str] = None
     trace_id: Optional[str] = None
@@ -265,6 +267,9 @@ def _run_agent(initial_state: dict) -> dict:
             error=result.get("error"),
             final_answer=result.get("final_answer"),
             sql_query=result.get("sql_query"),
+            sql_table=result.get("sql_table"),
+            mdl_metrics_referenced=result.get("mdl_metrics_referenced"),
+            entity_resolutions=result.get("entity_resolutions"),
         )
 
     if audit:
@@ -409,6 +414,8 @@ async def agent_query_stream(
                 "sql_attempts":    result.get("sql_attempts", 0),
                 "rag_chunks":      result.get("rag_chunks"),
                 "rag_verification":result.get("rag_verification"),
+                "mdl_metrics_referenced": result.get("mdl_metrics_referenced"),
+                "entity_resolutions":     result.get("entity_resolutions"),
                 "error":           result.get("error"),
                 "trace_url":       None,
                 "trace_id":        trace_id,
@@ -494,6 +501,8 @@ async def agent_query(request: AgentQueryRequest, authorization: Optional[str] =
         sql_attempts=result.get("sql_attempts", 0),
         rag_chunks=result.get("rag_chunks"),
         rag_verification=result.get("rag_verification"),
+        mdl_metrics_referenced=result.get("mdl_metrics_referenced"),
+        entity_resolutions=result.get("entity_resolutions"),
         error=result.get("error"),
         trace_id=initial_state.get("trace_id"),
     )
@@ -1002,6 +1011,9 @@ def _load_traces(max_lines: int = 8000) -> dict[str, dict]:
             t["error"] = e.get("error")
             t["final_answer"] = e.get("final_answer")
             t["sql_query"] = e.get("sql_query")
+            t["sql_table"] = e.get("sql_table")
+            t["mdl_metrics_referenced"] = e.get("mdl_metrics_referenced")
+            t["entity_resolutions"] = e.get("entity_resolutions")
     return traces
 
 
@@ -1075,6 +1087,9 @@ async def get_trace(trace_id: str):
         "error": t.get("error"),
         "final_answer": t.get("final_answer"),
         "sql_query": t.get("sql_query"),
+        "sql_table": t.get("sql_table"),
+        "mdl_metrics_referenced": t.get("mdl_metrics_referenced"),
+        "entity_resolutions": t.get("entity_resolutions"),
         "complete": "end_ts" in t,
         "start_ts": t["start_ts"],
         "total_ms": round((end_ts - t["start_ts"]) * 1000, 1),

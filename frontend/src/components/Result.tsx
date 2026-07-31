@@ -12,6 +12,9 @@ interface QueryOutputProps {
   onClose: () => void
   sql_query?: string
   warning?: string
+  sql_table?: string
+  mdl_metrics_referenced?: { name: string; expression: string; description: string }[]
+  entity_resolutions?: { mention: string; resolved_to: string; table: string; column: string }[]
 }
 
 const formatErrorMessage = (error: string) => {
@@ -45,7 +48,7 @@ const formatErrorMessage = (error: string) => {
   }
 }
 
-export function QueryOutput({ results, error, onClose, sql_query, warning }: QueryOutputProps) {
+export function QueryOutput({ results, error, onClose, sql_query, warning, sql_table, mdl_metrics_referenced, entity_resolutions }: QueryOutputProps) {
   const headerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [sortConfig, setSortConfig] = useState<{
@@ -297,6 +300,38 @@ export function QueryOutput({ results, error, onClose, sql_query, warning }: Que
                   
                 </div>
               </div>
+
+              {/* Provenance: which table / metric / entity answered the question */}
+              {!error && (sql_table || (mdl_metrics_referenced && mdl_metrics_referenced.length > 0) || (entity_resolutions && entity_resolutions.length > 0)) && (
+                <div className="px-6 py-3 border-b border-border/40 bg-muted/20 flex flex-wrap items-center gap-2 text-xs">
+                  {sql_table && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-background border border-border">
+                      <span className="text-muted-foreground">Table:</span>
+                      <span className="font-mono font-medium">{sql_table}</span>
+                    </span>
+                  )}
+                  {mdl_metrics_referenced?.map((m) => (
+                    <span
+                      key={m.name}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-background border border-border"
+                      title={m.description}
+                    >
+                      <span className="text-muted-foreground">{m.name}:</span>
+                      <span className="font-mono font-medium">{m.expression}</span>
+                    </span>
+                  ))}
+                  {entity_resolutions?.map((r) => (
+                    <span
+                      key={r.mention}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-background border border-border"
+                    >
+                      <span className="text-muted-foreground">{r.mention} →</span>
+                      <span className="font-medium">{r.resolved_to}</span>
+                      <span className="font-mono text-muted-foreground">({r.table}.{r.column})</span>
+                    </span>
+                  ))}
+                </div>
+              )}
 
               {/* SQL Query Display */}
               {showSQL && sql_query && (

@@ -108,20 +108,30 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
     # "Loctite adhesives") are intentionally skipped — they should generate
     # LIKE '%loctite%' patterns, not exact-value filters.
     product_hints: dict = {}
+    entity_resolutions: list = []
     import re as _re_digit
     _HAS_DIGIT = _re_digit.compile(r'\d')
     if product_index is not None and product_index.is_ready() and attempts == 0:
         for cand in extract_filter_candidates(question):
             if not _HAS_DIGIT.search(cand["text"]):
                 continue   # brand-only name — skip product index resolution
-            canonical = product_index.resolve(cand["text"], table=table_name or None)
-            if canonical is None and table_name:
+            hits = product_index.search(cand["text"], table=table_name or None)
+            if not hits and table_name:
                 # Primary table has no products (e.g. it's a supplier/budget table).
                 # Fall back to any table in the product index — the LLM will use
                 # the canonical name in whatever JOIN table it picks.
-                canonical = product_index.resolve(cand["text"], table=None)
-            if canonical and canonical.lower() != cand["text"].lower():
-                product_hints[cand["text"]] = canonical
+                hits = product_index.search(cand["text"], table=None)
+            if not hits:
+                continue
+            rec = hits[0]
+            entity_resolutions.append({
+                "mention": cand["text"],
+                "resolved_to": rec.full_name,
+                "table": rec.table,
+                "column": rec.col,
+            })
+            if rec.full_name.lower() != cand["text"].lower():
+                product_hints[cand["text"]] = rec.full_name
 
     # Step 1b: Pre-SQL value check — verify named entities exist in the DB.
     # Candidates already resolved by product_index are skipped (they're confirmed
@@ -147,18 +157,24 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
                 "sql_error": None,
                 "sql_attempts": attempts + 1,
                 "final_answer": val_msg,
+                "entity_resolutions": entity_resolutions,
             }
 
     _progress(trace_id, "generating", "Generating SQL...")
 
     # MDL enrichment — detect metric references and inject semantic context
     mdl_context: str | None = state.get("mdl_context")
+    mdl_metrics_used: list = state.get("mdl_metrics_referenced") or []
     if not mdl_context and attempts == 0:
         try:
             from ...text2sql.mdl.mdl_enricher import enrich_question
             enriched = enrich_question(question)
             if enriched.context_block:
                 mdl_context = enriched.context_block
+            mdl_metrics_used = [
+                {"name": m.name, "expression": m.expression, "description": m.description}
+                for m in enriched.mdl_metrics
+            ]
         except Exception:
             pass
 
@@ -184,6 +200,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             "sql_rows":   None,
             "sql_error":  f"SQL generation failed: {e}",
             "sql_attempts": attempts + 1,
+            "entity_resolutions": entity_resolutions,
+            "mdl_metrics_referenced": mdl_metrics_used,
         }
 
     # Deterministic table name correction — ensure the fully-qualified table
@@ -235,6 +253,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             "sql_rows":   None,
             "sql_error":  schema_hint,
             "sql_attempts": attempts + 1,
+            "entity_resolutions": entity_resolutions,
+            "mdl_metrics_referenced": mdl_metrics_used,
         }
 
     # Step 3b: Column semantic check — embedding-based comparison of question
@@ -252,6 +272,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             "sql_rows":   None,
             "sql_error":  sem_hint,
             "sql_attempts": attempts + 1,
+            "entity_resolutions": entity_resolutions,
+            "mdl_metrics_referenced": mdl_metrics_used,
         }
 
     # Step 3c: Post-SQL value check — verify WHERE literals exist in the index.
@@ -286,6 +308,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
                 "sql_rows":   None,
                 "sql_error":  correction_hint,
                 "sql_attempts": attempts + 1,
+                "entity_resolutions": entity_resolutions,
+                "mdl_metrics_referenced": mdl_metrics_used,
             }
 
     _progress(trace_id, "executing", "Executing SQL...")
@@ -312,6 +336,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
                 "sql_error":  None,
                 "sql_attempts": attempts + 1,
                 "final_answer": user_msg,
+                "entity_resolutions": entity_resolutions,
+                "mdl_metrics_referenced": mdl_metrics_used,
             }
 
         # Record in both SQLite history and InvertedIndex via unified indexer
@@ -324,6 +350,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             "sql_rows":   rows,
             "sql_error":  None,
             "sql_attempts": attempts + 1,
+            "entity_resolutions": entity_resolutions,
+            "mdl_metrics_referenced": mdl_metrics_used,
         }
     except Exception as e:
         return {
@@ -333,6 +361,8 @@ def sql_node(state: AgentState, *, data_service, value_index=None, product_index
             "sql_rows":   None,
             "sql_error":  str(e),
             "sql_attempts": attempts + 1,
+            "entity_resolutions": entity_resolutions,
+            "mdl_metrics_referenced": mdl_metrics_used,
         }
 
 

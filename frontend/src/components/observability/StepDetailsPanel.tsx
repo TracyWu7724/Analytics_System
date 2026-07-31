@@ -7,6 +7,9 @@ interface StepDetailsPanelProps {
   span: TraceSpan | null;
   stageStats: StageStat[];
   sqlQuery: string | null;
+  sqlTable?: string | null;
+  mdlMetricsReferenced?: { name: string; expression: string; description: string }[] | null;
+  entityResolutions?: { mention: string; resolved_to: string; table: string; column: string }[] | null;
 }
 
 function formatMs(ms: number): string {
@@ -22,7 +25,7 @@ function StatTile({ label, value, highlight }: { label: string; value: string; h
   );
 }
 
-export function StepDetailsPanel({ span, stageStats, sqlQuery }: StepDetailsPanelProps) {
+export function StepDetailsPanel({ span, stageStats, sqlQuery, sqlTable, mdlMetricsReferenced, entityResolutions }: StepDetailsPanelProps) {
   if (!span) {
     return (
       <div className="w-72 shrink-0 border-l border-gray-200 bg-white p-4">
@@ -52,6 +55,29 @@ export function StepDetailsPanel({ span, stageStats, sqlQuery }: StepDetailsPane
             <StatTile label="P50" value={formatMs(stats.p50)} />
             <StatTile label="P95" value={formatMs(stats.p95)} highlight />
             <StatTile label="P99" value={formatMs(stats.p99)} />
+          </div>
+        </div>
+      )}
+
+      {showSql && (sqlTable || (mdlMetricsReferenced && mdlMetricsReferenced.length > 0) || (entityResolutions && entityResolutions.length > 0)) && (
+        <div className="mb-4">
+          <p className="text-xs font-medium text-gray-600 mb-2">Provenance</p>
+          <div className="flex flex-wrap gap-1.5">
+            {sqlTable && (
+              <span className="text-[11px] px-2 py-1 rounded-md bg-gray-50 border border-gray-100 font-mono">
+                {sqlTable}
+              </span>
+            )}
+            {mdlMetricsReferenced?.map((m) => (
+              <span key={m.name} className="text-[11px] px-2 py-1 rounded-md bg-gray-50 border border-gray-100" title={m.description}>
+                {m.name}: <span className="font-mono">{m.expression}</span>
+              </span>
+            ))}
+            {entityResolutions?.map((r) => (
+              <span key={r.mention} className="text-[11px] px-2 py-1 rounded-md bg-gray-50 border border-gray-100">
+                {r.mention} → {r.resolved_to} <span className="font-mono text-gray-400">({r.table}.{r.column})</span>
+              </span>
+            ))}
           </div>
         </div>
       )}

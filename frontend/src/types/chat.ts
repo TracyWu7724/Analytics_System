@@ -18,6 +18,9 @@ export interface ChatMessage {
   route_reasoning?: string;
   rag_answer?: string;
   sql_rows?: Record<string, any>[];
+  sql_table?: string;
+  mdl_metrics_referenced?: { name: string; expression: string; description: string }[];
+  entity_resolutions?: { mention: string; resolved_to: string; table: string; column: string }[];
   rag_verification?: {
     passed: boolean;
     failed_layer: number;
