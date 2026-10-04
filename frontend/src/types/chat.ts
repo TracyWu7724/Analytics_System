@@ -17,6 +17,7 @@ export interface ChatMessage {
   route?: 'sql' | 'rag' | 'both' | 'schema';
   route_reasoning?: string;
   rag_answer?: string;
+  rag_chunks?: { text: string; score: number; source: string }[];
   sql_rows?: Record<string, any>[];
   sql_table?: string;
   mdl_metrics_referenced?: { name: string; expression: string; description: string }[];

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown, Check, Loader2, Activity } from 'lucide-react';
+import { Send, ArrowLeft, Settings, X, ChevronDown, ExternalLink, Zap, BookOpen, LogIn, ThumbsUp, ThumbsDown, Check, Loader2, Activity, FileText } from 'lucide-react';
 import UserMenu from './UserMenu';
 import { useAuth } from '../hooks/useAuth';
 import { useChat } from '../hooks/useChat';
@@ -210,6 +210,32 @@ const AgentChat: React.FC<AgentChatProps> = ({ initialQuery = '', initialLlmMode
                       />
                     </div>
                   )}
+
+                  {/* RAG sources — dedupe by source file, keep highest score per source */}
+                  {(message.route === 'rag' || message.route === 'both') &&
+                    !message.isLoading && message.rag_chunks && message.rag_chunks.length > 0 && (
+                      <div className="mt-2 px-1 flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs text-gray-400">Sources:</span>
+                        {Object.values(
+                          message.rag_chunks.reduce((acc, chunk) => {
+                            const existing = acc[chunk.source];
+                            if (!existing || chunk.score > existing.score) acc[chunk.source] = chunk;
+                            return acc;
+                          }, {} as Record<string, { text: string; score: number; source: string }>)
+                        )
+                          .sort((a, b) => b.score - a.score)
+                          .map((chunk) => (
+                            <span
+                              key={chunk.source}
+                              title={chunk.text}
+                              className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-green-50 border border-green-200 text-green-700"
+                            >
+                              <FileText className="w-3 h-3" />
+                              {chunk.source.replace(/\.pdf$/i, '')}
+                            </span>
+                          ))}
+                      </div>
+                    )}
 
                   {/* LangSmith trace link */}
                   {message.trace_url && !message.isLoading && (
