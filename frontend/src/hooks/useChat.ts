@@ -146,6 +146,7 @@ export function useChat({ initialQuery = '', initialLlmModel, sessionIdProp }: U
         mdl_metrics_referenced: data.mdl_metrics_referenced,
         entity_resolutions: data.entity_resolutions,
         rag_answer: data.final_answer ?? undefined,
+        rag_chunks: data.rag_chunks,
         rag_verification: data.rag_verification,
         error: data.error,
         trace_url: data.trace_url,
